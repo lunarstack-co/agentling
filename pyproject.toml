@@ -23,9 +23,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/folathecoder/agentling"
-Repository = "https://github.com/folathecoder/agentling"
-Issues = "https://github.com/folathecoder/agentling/issues"
+Homepage = "https://github.com/lunarstack-co/agentling"
+Repository = "https://github.com/lunarstack-co/agentling"
+Issues = "https://github.com/lunarstack-co/agentling/issues"
 
 [build-system]
 requires = ["hatchling"]

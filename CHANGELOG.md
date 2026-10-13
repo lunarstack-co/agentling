@@ -26,4 +26,4 @@ The first real release: the core framework plus a production-hardening pass.
   run off the event loop, optional error redaction (`redact_errors`), cumulative
   token usage on the final event, and a `context_manager` hook for long runs.
 
-[0.1.0]: https://github.com/folathecoder/agentling/releases/tag/v0.1.0
+[0.1.0]: https://github.com/lunarstack-co/agentling/releases/tag/v0.1.0
