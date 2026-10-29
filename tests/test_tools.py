@@ -1,8 +1,8 @@
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import pytest
 
-from agentling.tools import FinalAnswerTool, Tool, ToolCallError, tool
+from agentling.tools import FinalAnswerTool, Tool, ToolCallError, _check_tool, tool
 
 
 # --------------------------------------------------------------------------- #
@@ -216,3 +216,276 @@ def test_invalid_tool_name_is_rejected() -> None:
     f.__name__ = "bad name!"
     with pytest.raises(ValueError, match="valid tool name"):
         tool(f)
+
+
+# --------------------------------------------------------------------------- #
+# Schemas from outside (JSON Schema tolerance)
+# --------------------------------------------------------------------------- #
+class _EchoTool(Tool):
+    """A tool built from a raw schema, as an MCP or OpenAPI bridge would."""
+
+    async def forward(self, **kwargs: Any) -> Any:
+        return kwargs
+
+
+def _schema_tool(
+    parameters: Any, *, name: str = "t", validate_arguments: bool = True
+) -> Tool:
+    built = _EchoTool()
+    built.name = name
+    built.description = "A tool whose schema came from somewhere else."
+    built.parameters = parameters
+    built.validate_arguments = validate_arguments
+    return built
+
+
+def _one_property(spec: Any) -> dict[str, Any]:
+    return {"type": "object", "properties": {"x": spec}}
+
+
+async def test_union_type_accepts_each_member() -> None:
+    t = _schema_tool(_one_property({"type": ["string", "null"]}))
+
+    assert await t.call({"x": "a"}) == {"x": "a"}
+    assert await t.call({"x": None}) == {"x": None}
+
+
+async def test_union_type_rejects_non_member() -> None:
+    t = _schema_tool(_one_property({"type": ["string", "null"]}))
+
+    with pytest.raises(
+        ToolCallError, match=r"argument 'x' expects \['string', 'null'\], got int"
+    ):
+        await t.call({"x": 5})
+
+
+async def test_union_type_never_raises_type_error() -> None:
+    t = _schema_tool(_one_property({"type": ["integer", "weird"]}))
+
+    assert await t.call({"x": "s"}) == {"x": "s"}
+
+
+async def test_bool_rejected_for_integer_in_union() -> None:
+    t = _schema_tool(_one_property({"type": ["integer", "null"]}))
+
+    with pytest.raises(ToolCallError, match="expects"):
+        await t.call({"x": True})
+
+
+async def test_null_type_alone() -> None:
+    t = _schema_tool(_one_property({"type": "null"}))
+
+    assert await t.call({"x": None}) == {"x": None}
+    with pytest.raises(ToolCallError, match="expects null"):
+        await t.call({"x": 0})
+
+
+async def test_unknown_type_name_is_not_enforced() -> None:
+    t = _schema_tool(_one_property({"type": "uuid"}))
+
+    assert await t.call({"x": 123}) == {"x": 123}
+
+
+async def test_unimplemented_keywords_are_ignored() -> None:
+    t = _schema_tool(
+        {
+            "type": "object",
+            "properties": {
+                "a": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "b": {"$ref": "#/defs/x"},
+                "c": {"type": "string", "format": "email"},
+            },
+        }
+    )
+
+    arguments = {"a": 1, "b": [], "c": "not-an-email"}
+    assert await t.call(arguments) == arguments
+
+
+async def test_missing_properties_accepts_any_argument() -> None:
+    t = _schema_tool({"type": "object"})
+
+    assert await t.call({"q": "hi", "n": 2}) == {"q": "hi", "n": 2}
+
+
+async def test_additional_properties_true_allows_extras() -> None:
+    t = _schema_tool(
+        {
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "additionalProperties": True,
+        }
+    )
+
+    assert await t.call({"a": "x", "extra": 1}) == {"a": "x", "extra": 1}
+
+
+async def test_additional_properties_absent_allows_extras() -> None:
+    t = _schema_tool({"type": "object", "properties": {"a": {"type": "string"}}})
+
+    assert await t.call({"a": "x", "extra": 1}) == {"a": "x", "extra": 1}
+
+
+async def test_additional_properties_false_rejects_extras() -> None:
+    t = _schema_tool(
+        {"type": "object", "properties": {}, "additionalProperties": False}
+    )
+
+    with pytest.raises(ToolCallError, match=r"got unexpected argument\(s\): q"):
+        await t.call({"q": 1})
+
+
+async def test_required_still_enforced_for_schema_tools() -> None:
+    t = _schema_tool(
+        {
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "required": ["a"],
+        }
+    )
+
+    with pytest.raises(ToolCallError, match=r"missing required argument\(s\): a"):
+        await t.call({})
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"type": "object", "properties": "oops"},
+        {"type": "object", "properties": {"a": "string"}},
+        {"type": "object", "properties": {"a": {"type": "string"}}, "required": "a"},
+        {"type": "object", "properties": {"a": {"enum": "abc"}}},
+        {"type": "object", "properties": {"a": {"type": 5}}},
+    ],
+)
+async def test_malformed_schema_parts_never_raise_other_errors(
+    parameters: dict[str, Any],
+) -> None:
+    t = _schema_tool(parameters)
+
+    try:
+        await t.call({"a": "x"})
+    except ToolCallError:
+        pass
+
+
+async def test_enum_still_enforced() -> None:
+    t = _schema_tool(_one_property({"type": "string", "enum": ["c", "f"]}))
+
+    with pytest.raises(ToolCallError, match=r"must be one of \['c', 'f'\]"):
+        await t.call({"x": "k"})
+
+
+# --------------------------------------------------------------------------- #
+# validate_arguments and the public validate()
+# --------------------------------------------------------------------------- #
+def test_validate_arguments_defaults_true() -> None:
+    @tool
+    def t(x: int) -> int:
+        """Doc."""
+        return x
+
+    assert _EchoTool.validate_arguments is True
+    assert t.validate_arguments is True
+
+
+async def test_validation_disabled_skips_schema_checks() -> None:
+    t = _schema_tool(
+        {
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "required": ["a"],
+            "additionalProperties": False,
+        },
+        validate_arguments=False,
+    )
+
+    assert await t.call({"zzz": 1}) == {"zzz": 1}
+
+
+async def test_validation_disabled_still_requires_dict() -> None:
+    t = _schema_tool({"type": "object"}, validate_arguments=False)
+
+    with pytest.raises(ToolCallError, match="expected an arguments object, got list"):
+        await t.call(["a"])  # type: ignore[arg-type]
+
+
+async def test_tool_decorator_sets_validate_arguments() -> None:
+    @tool(validate_arguments=False)
+    def t(x: int) -> int:
+        """Doc."""
+        return x
+
+    assert t.validate_arguments is False
+    # Reaching the function's own TypeError proves validation was skipped.
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        await t.call({"x": 1, "unknown": 2})
+
+
+def test_validate_is_public_and_honours_flag() -> None:
+    t = _schema_tool(
+        {"type": "object", "properties": {}, "additionalProperties": False}
+    )
+
+    with pytest.raises(ToolCallError, match=r"got unexpected argument\(s\): bad"):
+        t.validate({"bad": 1})
+
+    t.validate_arguments = False
+    t.validate({"bad": 1})
+
+
+async def test_call_goes_through_validate() -> None:
+    order: list[str] = []
+
+    class _Recording(_EchoTool):
+        def validate(self, arguments: dict[str, Any]) -> None:
+            order.append(f"validate:{arguments}")
+            super().validate(arguments)
+
+        async def forward(self, **kwargs: Any) -> Any:
+            order.append("forward")
+            return kwargs
+
+    t = _Recording()
+    t.name = "rec"
+    t.description = "Records the call order."
+    t.parameters = {"type": "object"}
+
+    await t.call({"x": 1})
+
+    assert order == ["validate:{'x': 1}", "forward"]
+
+
+# --------------------------------------------------------------------------- #
+# Registration checks
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "bad_name", ["issues.create", "a b", "", "x" * 65, "naïve", "trailing\n"]
+)
+def test_check_tool_rejects_invalid_names(bad_name: str) -> None:
+    t = _schema_tool({"type": "object"}, name=bad_name)
+
+    with pytest.raises(ValueError) as excinfo:
+        _check_tool(t)
+
+    assert str(excinfo.value) == (
+        f"Tool name {bad_name!r} is not a valid tool name: use letters, "
+        "digits, underscore, or hyphen, up to 64 characters."
+    )
+
+
+@pytest.mark.parametrize("good_name", ["a", "x" * 64, "mcp__linear__create-issue"])
+def test_check_tool_accepts_valid_names(good_name: str) -> None:
+    _check_tool(_schema_tool({"type": "object"}, name=good_name))
+
+
+@pytest.mark.parametrize("parameters", [{"type": "string"}, {}, [], None])
+def test_check_tool_rejects_non_object_parameters(parameters: Any) -> None:
+    t = _schema_tool(parameters)
+
+    with pytest.raises(ValueError) as excinfo:
+        _check_tool(t)
+
+    assert str(excinfo.value) == (
+        'Tool \'t\' parameters must be a JSON Schema object with "type": "object".'
+    )

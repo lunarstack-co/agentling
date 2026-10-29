@@ -18,27 +18,30 @@ from agentling.events import (
     ToolResultEvent,
     print_events,
 )
-from agentling.memory import ActionStep, FinalStep, TaskStep
+from agentling.memory import ActionStep, FinalStep, Memory, TaskStep
 from agentling.models import ChatMessage, Delta, ToolCall, ToolCallDelta, Usage
 from agentling.skills import Skill
-from agentling.tools import ToolCallError, tool
+from agentling.tools import Tool, ToolCallError, tool
 
 
 class FakeModel:
     """A scripted model: returns pre-set ChatMessages in order, no network.
 
-    Records the messages it was called with so tests can assert on the loop.
+    Records the messages and tool schemas it was called with so tests can
+    assert on the loop.
     """
 
     def __init__(self, responses: Sequence[ChatMessage]) -> None:
         self._responses = list(responses)
         self._index = 0
         self.calls: list[list[ChatMessage]] = []
+        self.tool_specs: list[list[Any]] = []
 
     async def generate(
         self, messages: Sequence[ChatMessage], tools: Sequence[Any] | None = None
     ) -> ChatMessage:
         self.calls.append(list(messages))
+        self.tool_specs.append(list(tools or []))
         response = self._responses[self._index]
         self._index += 1
         return response
@@ -49,6 +52,7 @@ class FakeModel:
         # Replay the next scripted response as a delta stream that
         # agglomerate_deltas rebuilds into the same ChatMessage.
         self.calls.append(list(messages))
+        self.tool_specs.append(list(tools or []))
         response = self._responses[self._index]
         self._index += 1
         if response.content:
@@ -986,3 +990,320 @@ def test_truncate_middle_handles_tiny_limits() -> None:
     windowed = _truncate_middle("x" * 100, 20)
     assert "omitted" in windowed
     assert len(windowed) < 100
+
+
+# --------------------------------------------------------------------------- #
+# Dynamic tools: add_tools, remove_tools and registration checks
+# --------------------------------------------------------------------------- #
+class _SchemaTool(Tool):
+    """A tool built from a raw schema that answers with a fixed label."""
+
+    def __init__(self, name: str, label: str = "", parameters: Any = None) -> None:
+        self.name = name
+        self.description = f"The {name} tool."
+        self.parameters = parameters if parameters is not None else {"type": "object"}
+        self._label = label or name
+
+    async def forward(self, **kwargs: Any) -> Any:
+        return self._label
+
+
+def _tool_names(specs: list[Any]) -> list[str]:
+    return [spec["function"]["name"] for spec in specs]
+
+
+def _results(session: AgentSession) -> list[Any]:
+    return [
+        result
+        for step in session.memory.steps
+        if isinstance(step, ActionStep)
+        for result in step.tool_results
+    ]
+
+
+def test_agent_rejects_invalid_subclass_tool() -> None:
+    with pytest.raises(ValueError, match="'issues.create' is not a valid tool name"):
+        Agent(model=FakeModel([]), tools=[_SchemaTool("issues.create")])
+
+
+def test_agent_rejects_non_object_schema_tool() -> None:
+    with pytest.raises(ValueError, match='JSON Schema object with "type": "object"'):
+        Agent(
+            model=FakeModel([]),
+            tools=[_SchemaTool("t", parameters={"type": "string"})],
+        )
+
+
+async def test_add_tools_exposes_tool_on_next_call() -> None:
+    model = FakeModel([_tool_turn("c1", "a"), _assistant(content="done")])
+    session = Agent(model=model).start()
+
+    session.add_tools([_SchemaTool("a", label="from a")])
+
+    assert await session.run("go") == "done"
+    assert _tool_names(model.tool_specs[0]) == ["final_answer", "a"]
+    assert _results(session)[0].content == "from a"
+
+
+async def test_add_tools_mid_run_visible_next_step() -> None:
+    model = FakeModel(
+        [_tool_turn("c1", "b"), _tool_turn("c2", "a"), _assistant(content="done")]
+    )
+    agent = Agent(model=model, tools=[_SchemaTool("b")])
+    session = agent.start()
+    added: list[bool] = []
+
+    def add_after_first_step(step: Any) -> None:
+        if not added:
+            session.add_tools([_SchemaTool("a")])
+            added.append(True)
+
+    session.step_callbacks.append(add_after_first_step)
+
+    assert await session.run("go") == "done"
+    assert "a" not in _tool_names(model.tool_specs[0])
+    assert "a" in _tool_names(model.tool_specs[1])
+    assert _results(session)[1].is_error is False
+
+
+def test_add_tools_duplicate_in_batch_is_atomic() -> None:
+    session = Agent(model=FakeModel([])).start()
+    before = list(session._tool_schemas)
+
+    with pytest.raises(ValueError, match="Duplicate tool name: 'a'"):
+        session.add_tools([_SchemaTool("a"), _SchemaTool("a")])
+
+    assert "a" not in session.tools
+    assert session._tool_schemas == before
+
+
+def test_add_tools_existing_name_without_replace() -> None:
+    session = Agent(model=FakeModel([])).start()
+    original = _SchemaTool("a")
+    session.add_tools([original])
+
+    with pytest.raises(ValueError, match="Duplicate tool name: 'a'"):
+        session.add_tools([_SchemaTool("a")])
+
+    assert session.tools["a"] is original
+
+
+async def test_add_tools_replace_keeps_position() -> None:
+    model = FakeModel([_tool_turn("c1", "a"), _assistant(content="done")])
+    session = Agent(model=model, tools=[_SchemaTool("x")]).start()
+    session.add_tools([_SchemaTool("a", label="v1"), _SchemaTool("y")])
+    position = _tool_names(session._tool_schemas).index("a")
+
+    replacement = _SchemaTool("a", label="v2")
+    session.add_tools([replacement], replace=True)
+
+    assert _tool_names(session._tool_schemas).index("a") == position
+    assert session.tools["a"] is replacement
+    await session.run("go")
+    assert _results(session)[0].content == "v2"
+
+
+def test_add_tools_invalid_tool_is_atomic() -> None:
+    session = Agent(model=FakeModel([])).start()
+
+    with pytest.raises(ValueError, match="not a valid tool name"):
+        session.add_tools([_SchemaTool("good"), _SchemaTool("bad.name")])
+
+    assert "good" not in session.tools
+
+
+def test_add_tools_accepts_generator_and_empty() -> None:
+    session = Agent(model=FakeModel([])).start()
+
+    session.add_tools(t for t in [_SchemaTool("a")])
+    session.add_tools([])
+
+    assert list(session.tools).count("a") == 1
+    assert session._tool_schemas == [t.to_schema() for t in session.tools.values()]
+
+
+def test_add_tools_is_session_local() -> None:
+    agent = Agent(model=FakeModel([]))
+    s1 = agent.start()
+    s2 = agent.start()
+
+    s1.add_tools([_SchemaTool("a")])
+
+    assert "a" in s1.tools
+    assert "a" not in s2.tools
+    assert "a" not in agent.start().tools
+
+
+async def test_remove_tools_removes_tool_and_schema() -> None:
+    model = FakeModel([_assistant(content="done")])
+    session = Agent(model=model).start()
+    session.add_tools([_SchemaTool("a"), _SchemaTool("b")])
+
+    session.remove_tools(["a"])
+
+    assert "a" not in session.tools
+    await session.run("go")
+    names = _tool_names(model.tool_specs[0])
+    assert "a" not in names
+    assert "b" in names
+
+
+def test_remove_tools_unknown_is_atomic() -> None:
+    session = Agent(model=FakeModel([])).start()
+    session.add_tools([_SchemaTool("a")])
+
+    with pytest.raises(ValueError, match="Unknown tool: 'missing'"):
+        session.remove_tools(["a", "missing"])
+
+    assert "a" in session.tools
+
+
+def test_remove_tools_dedupes_and_empty() -> None:
+    session = Agent(model=FakeModel([])).start()
+    session.add_tools([_SchemaTool("a")])
+
+    session.remove_tools(["a", "a"])
+    session.remove_tools([])
+
+    assert "a" not in session.tools
+
+
+def test_reserved_names_cannot_be_removed() -> None:
+    session = Agent(model=FakeModel([]), skills=[_REVIEWER_SKILL]).start()
+
+    with pytest.raises(ValueError, match="'final_answer' is a reserved tool name."):
+        session.remove_tools(["final_answer"])
+    with pytest.raises(ValueError, match="'load_skill' is a reserved tool name."):
+        session.remove_tools(["load_skill"])
+
+    assert {"final_answer", "load_skill"} <= set(session.tools)
+
+
+def test_reserved_names_cannot_be_replaced() -> None:
+    session = Agent(model=FakeModel([]), skills=[_REVIEWER_SKILL]).start()
+    final_answer = session.tools["final_answer"]
+    load_skill = session.tools["load_skill"]
+
+    for name in ("final_answer", "load_skill"):
+        with pytest.raises(ValueError, match=f"'{name}' is a reserved tool name."):
+            session.add_tools([_SchemaTool(name)], replace=True)
+
+    assert session.tools["final_answer"] is final_answer
+    assert session.tools["load_skill"] is load_skill
+
+
+def test_load_skill_not_reserved_without_skills() -> None:
+    session = Agent(model=FakeModel([])).start()
+
+    session.add_tools([_SchemaTool("load_skill")])
+
+    assert "load_skill" in session.tools
+
+
+async def test_removed_tool_call_returns_unknown_tool() -> None:
+    model = FakeModel([_tool_turn("c1", "a"), _assistant(content="recovered")])
+    session = Agent(model=model).start()
+    session.add_tools([_SchemaTool("a")])
+    session.remove_tools(["a"])
+
+    events = [event async for event in session.run("go", stream=True)]
+
+    result = _results(session)[0]
+    assert result.is_error is True
+    assert result.error_kind == "unknown_tool"
+    assert result.content.startswith("Unknown tool 'a'")
+    final = events[-1]
+    assert isinstance(final, FinalEvent)
+    assert final.status == "completed"
+    assert final.answer == "recovered"
+
+
+async def test_removed_mid_run_tool_returns_unknown_tool() -> None:
+    model = FakeModel(
+        [_tool_turn("c1", "a"), _tool_turn("c2", "a"), _assistant(content="done")]
+    )
+    session = Agent(model=model).start()
+    session.add_tools([_SchemaTool("a")])
+
+    def remove_after_first_step(step: Any) -> None:
+        if "a" in session.tools:
+            session.remove_tools(["a"])
+
+    session.step_callbacks.append(remove_after_first_step)
+
+    assert await session.run("go") == "done"
+    first, second = _results(session)
+    assert first.is_error is False
+    assert second.error_kind == "unknown_tool"
+
+
+async def test_load_skill_twice_is_idempotent() -> None:
+    model = FakeModel(
+        [
+            _load_skill_turn("c1", "calc"),
+            _load_skill_turn("c2", "calc"),
+            _assistant(content="done"),
+        ]
+    )
+    session = Agent(model=model, skills=[_CALC_SKILL]).start()
+
+    assert await session.run("load twice") == "done"
+    assert all(result.is_error is False for result in _results(session))
+    assert _tool_names(model.tool_specs[2]).count("multiply") == 1
+
+
+async def test_load_skill_conflict_is_an_observation() -> None:
+    @tool
+    def multiply(a: int, b: int) -> int:
+        """A different tool that shares the skill tool's name.
+
+        Args:
+            a: The first number.
+            b: The second number.
+        """
+        return 0
+
+    model = FakeModel([_load_skill_turn("c1", "calc"), _assistant(content="done")])
+    session = Agent(model=model, tools=[multiply], skills=[_CALC_SKILL]).start()
+
+    assert await session.run("load calc") == "done"
+    result = _results(session)[0]
+    assert result.is_error is True
+    assert result.error_kind == "validation"
+    assert (
+        "Skill 'calc' declares tool 'multiply', which conflicts with an existing tool."
+        in result.content
+    )
+    assert session.tools["multiply"] is multiply
+
+
+async def test_memory_with_removed_tool_restores_and_runs() -> None:
+    first_model = FakeModel([_tool_turn("c1", "b"), _assistant(content="first")])
+    first = Agent(model=first_model, tools=[_SchemaTool("b")]).start()
+    await first.run("use b")
+    saved = first.memory.dump_json()
+
+    second_model = FakeModel([_assistant(content="second")])
+    second = Agent(model=second_model).start()
+    second.memory = Memory.load_json(saved)
+
+    rendered = second.memory.to_messages("instructions")
+    assert any(call.name == "b" for message in rendered for call in message.tool_calls)
+    assert await second.run("again", reset=False) == "second"
+
+
+def test_no_new_runtime_dependencies() -> None:
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    names = sorted(
+        dep.split(">")[0].split("=")[0].split("<")[0].strip()
+        for dep in project["project"]["dependencies"]
+    )
+    assert names == ["openai", "pyyaml"]
+
+    for source in (root / "src" / "agentling").glob("*.py"):
+        text = source.read_text(encoding="utf-8")
+        assert "import mcp" not in text
+        assert "from mcp" not in text

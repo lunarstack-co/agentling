@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 import examples.cli_advanced_observer as observer
+import examples.cli_dynamic_tools as dynamic_tools
 import examples.cli_failure_recovery as failure_recovery
 import examples.cli_math_tutor as math_tutor
 import examples.cli_memory_chat as memory_chat
@@ -81,7 +82,7 @@ def _call(call_id: str, name: str, /, **arguments: Any) -> ToolCall:
 # Import / shape
 # --------------------------------------------------------------------------- #
 def test_offline_examples_expose_build_agent_and_main() -> None:
-    for module in (failure_recovery, memory_chat, observer):
+    for module in (dynamic_tools, failure_recovery, memory_chat, observer):
         assert callable(module.build_agent)
         assert callable(module.main)
 
@@ -98,6 +99,27 @@ async def test_failure_recovery_recovers_from_tool_errors() -> None:
     assert action_steps  # at least one step was recorded
     errors = [r for s in action_steps for r in s.tool_results if r.is_error]
     assert errors  # a tool failure surfaced as a recoverable observation
+
+
+# --------------------------------------------------------------------------- #
+# Dynamic tools (offline)
+# --------------------------------------------------------------------------- #
+async def test_dynamic_tools_example_adds_and_removes() -> None:
+    session = dynamic_tools.build_agent().start()
+    first, second = await dynamic_tools.run_demo(session)
+
+    assert first == "It's 18°C with light rain in Lagos."
+    assert second == "The weather tool is gone, so I can't check again."
+    results = [
+        r
+        for s in session.memory.steps
+        if isinstance(s, ActionStep)
+        for r in s.tool_results
+    ]
+    assert results[0].name == "get_weather"
+    assert results[0].is_error is False
+    assert results[1].name == "get_weather"
+    assert results[1].error_kind == "unknown_tool"
 
 
 # --------------------------------------------------------------------------- #

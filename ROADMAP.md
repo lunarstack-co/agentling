@@ -16,6 +16,12 @@ The first release: the core framework plus a production-hardening pass —
 memory with JSON persistence, streaming events, progressive-disclosure skills,
 timeouts/cancellation, malformed-output recovery, and a runnable examples suite.
 
+## Shipped — v0.1.1
+
+Tools defined at runtime: `add_tools` / `remove_tools` on a live session,
+validation that tolerates real-world JSON Schemas, `validate_arguments`, and an
+MCP bridge recipe in the docs (no `mcp` dependency).
+
 ## Next — Reliability (v0.2)
 
 **Top priority.** Harden and clean up the v0.1 surface before adding features.
@@ -71,7 +77,6 @@ Ideas we like but have not committed to a milestone:
 - Structured output (JSON mode / response schemas).
 - A human-in-the-loop hook to approve, deny, or modify a tool call before it
   runs (guardrails).
-- An MCP bridge recipe (wrap an MCP tool as an agentling tool).
 - An exhaustive failure-mode test suite and a trust policy for skill-provided
   tools.
 

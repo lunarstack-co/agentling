@@ -49,7 +49,7 @@ from .models import (
     agglomerate_deltas,
 )
 from .skills import Skill
-from .tools import FinalAnswerTool, Tool, ToolCallError, tool
+from .tools import FinalAnswerTool, Tool, ToolCallError, _check_tool, tool
 
 DEFAULT_INSTRUCTIONS = (
     "You are a helpful agent. Use the available tools to gather information or "
@@ -115,14 +115,12 @@ class Agent:
         # loudly rather than letting one tool shadow another. Each session gets
         # its own copy of this set (see AgentSession).
         base_tools: dict[str, Tool] = {}
-        base_schemas: list[ToolSpec] = []
         for base_tool in (*tools, FinalAnswerTool()):
+            _check_tool(base_tool)
             if base_tool.name in base_tools:
                 raise ValueError(f"Duplicate tool name: {base_tool.name!r}")
             base_tools[base_tool.name] = base_tool
-            base_schemas.append(base_tool.to_schema())
         self._base_tools = base_tools
-        self._base_schemas = base_schemas
 
         # Load skills up front but reveal only their names and descriptions. The
         # full instructions and any skill tools arrive when the model calls
@@ -193,8 +191,8 @@ class AgentSession:
     """One conversation's mutable state plus the agent loop.
 
     A session owns its own Memory, interrupt token, and tool set (a copy of the
-    Agent's base tools, so skill tools loaded here never leak into another
-    session). Create one with Agent.start().
+    Agent's base tools, so tools added here never leak into another session).
+    Create one with Agent.start(). Change tools with add_tools()/remove_tools().
     """
 
     def __init__(self, agent: Agent) -> None:
@@ -203,24 +201,68 @@ class AgentSession:
         self.step_callbacks = list(agent.step_callbacks)
         self._interrupt = asyncio.Event()
 
-        # Per-session tool view. Copying the agent's base set keeps any skill
-        # tools loaded during this run isolated to this session.
         self.tools: dict[str, Tool] = dict(agent._base_tools)
-        self._tool_schemas: list[ToolSpec] = list(agent._base_schemas)
         if agent.skills:
-            self._register_tool(self._build_load_skill_tool())
+            load_skill = self._build_load_skill_tool()
+            self.tools[load_skill.name] = load_skill
+        self._tool_schemas: list[ToolSpec] = []
+        self._rebuild_schemas()
 
-    def _register_tool(self, new_tool: Tool) -> None:
-        """Add a tool to this session's tool set, skipping names already present.
+    def add_tools(self, tools: Iterable[Tool], *, replace: bool = False) -> None:
+        """Add tools to this session, visible from the model's next call.
 
-        Registration is idempotent so a skill can be loaded more than once, or
-        declare a tool the session already has, without raising mid-run.
+        All or nothing: raises ValueError and adds nothing if any tool has a bad
+        name or schema, a reserved name, or a name already taken (unless
+        `replace` is True, which swaps it in place).
         """
 
-        if new_tool.name in self.tools:
+        new_tools = list(tools)
+        reserved = self._reserved_names()
+        seen: set[str] = set()
+        for new_tool in new_tools:
+            _check_tool(new_tool)
+            if new_tool.name in reserved:
+                raise ValueError(f"{new_tool.name!r} is a reserved tool name.")
+            if new_tool.name in seen or (new_tool.name in self.tools and not replace):
+                raise ValueError(f"Duplicate tool name: {new_tool.name!r}")
+            seen.add(new_tool.name)
+
+        if not new_tools:
             return
-        self.tools[new_tool.name] = new_tool
-        self._tool_schemas.append(new_tool.to_schema())
+        for new_tool in new_tools:
+            self.tools[new_tool.name] = new_tool
+        self._rebuild_schemas()
+
+    def remove_tools(self, names: Iterable[str]) -> None:
+        """Remove tools from this session, from the model's next call.
+
+        All or nothing: raises ValueError and removes nothing if any name is
+        reserved or unknown.
+        """
+
+        targets = list(dict.fromkeys(names))
+        reserved = self._reserved_names()
+        for name in targets:
+            if name in reserved:
+                raise ValueError(f"{name!r} is a reserved tool name.")
+        for name in targets:
+            if name not in self.tools:
+                raise ValueError(f"Unknown tool: {name!r}")
+
+        if not targets:
+            return
+        for name in targets:
+            del self.tools[name]
+        self._rebuild_schemas()
+
+    def _reserved_names(self) -> frozenset[str]:
+        if self.agent.skills:
+            return frozenset({"final_answer", "load_skill"})
+        return frozenset({"final_answer"})
+
+    def _rebuild_schemas(self) -> None:
+        # A new list, so one already handed to the model is never mutated.
+        self._tool_schemas = [t.to_schema() for t in self.tools.values()]
 
     @overload
     def run(
@@ -560,8 +602,15 @@ class AgentSession:
                 )
 
             loaded = skill.load_tools()
-            for skill_tool in loaded:
-                self._register_tool(skill_tool)
+            # Reloading a skill returns the same objects; skip those.
+            new_tools = [t for t in loaded if self.tools.get(t.name) is not t]
+            for skill_tool in new_tools:
+                if skill_tool.name in self.tools:
+                    raise ToolCallError(
+                        f"Skill {name!r} declares tool {skill_tool.name!r}, "
+                        "which conflicts with an existing tool."
+                    )
+            self.add_tools(new_tools)
 
             body = skill.instructions
             if loaded:
