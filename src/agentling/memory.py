@@ -1,11 +1,8 @@
-"""Typed step records and the agent's memory.
+"""Typed steps and the agent's memory.
 
-The agent loop records each turn as a typed Step (TaskStep, ActionStep,
-FinalStep) rather than as raw messages. Steps carry metadata such as token
-usage, timing, and per-tool results and errors, and they know how to render
-themselves back into the ChatMessage list the model sees. Memory holds the
-steps, renders the full conversation via to_messages(), and round-trips to JSON
-for persistence and replay.
+The loop records each turn as a TaskStep, ActionStep or FinalStep rather than as
+raw messages. Steps keep usage, timing and tool results, and render themselves
+into the messages the model sees. Memory holds the steps and saves to JSON.
 """
 
 from __future__ import annotations
@@ -29,9 +26,8 @@ class ToolResult:
     name: str
     content: str
     is_error: bool = False
-    # For failures, the kind of failure: "validation" (bad arguments),
-    # "execution" (the tool raised), "timeout", or "unknown_tool". None on
-    # success. Drives the recovery hint shown to the model.
+    # "validation", "execution", "timeout" or "unknown_tool"; None on success.
+    # Picks the recovery hint the model sees.
     error_kind: str | None = None
 
 
@@ -49,14 +45,11 @@ class TaskStep:
 
 @dataclass
 class ActionStep:
-    """One agent loop iteration.
-
-    Stores the assistant message the model produced, any tool results from that
-    message, and optional execution metadata (error, usage, timing).
-    """
+    """One loop iteration: the model's message, its tool results, usage and timing."""
 
     model_message: ChatMessage
     tool_results: list[ToolResult] = field(default_factory=list)
+    # The loop doesn't set this; it is kept for callers and saved runs.
     error: str | None = None
     usage: Usage | None = None
     duration: float | None = None
@@ -64,14 +57,11 @@ class ActionStep:
     def to_messages(self) -> list[ChatMessage]:
         """Render the assistant turn, then one tool message per result."""
 
-        # model_message is already role="assistant"; reuse it as-is.
         messages: list[ChatMessage] = [self.model_message]
 
         for result in self.tool_results:
             content = result.content
-            # Failed tool calls are returned to the model as observations so the
-            # next turn can recover. Only a validation error is fixed by changing
-            # the arguments; other failures need a different approach.
+            # Only a validation error is fixed by changing the arguments.
             if result.is_error:
                 if result.error_kind == "validation":
                     hint = "Fix the arguments and try again."
@@ -105,14 +95,9 @@ Step = TaskStep | ActionStep | FinalStep
 
 @dataclass
 class Memory:
-    """Ordered history of an agent run.
+    """Ordered history of an agent run, as typed steps."""
 
-    Stores typed steps rather than raw provider messages, renders them into the
-    ChatMessage list the model sees, and serializes them for persistence/replay.
-    """
-
-    # Discriminator tag written into each serialized step so from_dict() can
-    # rebuild the right class. ClassVar keeps it class-level config, not a field.
+    # The tag saved with each step so from_dict() can rebuild the right class.
     _KIND: ClassVar[dict[type, str]] = {
         TaskStep: "task",
         ActionStep: "action",
@@ -134,8 +119,8 @@ class Memory:
     def to_messages(self, system_prompt: str) -> list[ChatMessage]:
         """Render the full conversation: system prompt, then every step."""
 
-        # The system prompt is runtime configuration, not run history. Injecting
-        # it here means it is always first and never duplicated in stored steps.
+        # The system prompt isn't stored as a step, so it is always first and
+        # never saved twice.
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=system_prompt)
         ]
@@ -146,10 +131,8 @@ class Memory:
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dict, tagging each step with its kind."""
 
-        # asdict() recurses the whole nested tree (ChatMessage -> ToolCalls ->
-        # Usage, ToolResults) into plain dicts but drops type information, which
-        # the load path restores from each step's "type" tag. The version field
-        # lets the format evolve without breaking older saved runs.
+        # asdict() drops the nested types; from_dict() rebuilds them using the
+        # "type" tag. "version" lets the format change later.
         return {
             "version": _MEMORY_VERSION,
             "steps": [
@@ -160,11 +143,9 @@ class Memory:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Memory:
-        """Rebuild a Memory from the dict produced by to_dict().
+        """Rebuild a Memory from to_dict() output.
 
-        Validates the version and overall shape, raising MemoryLoadError with a
-        clear message rather than letting a malformed payload fail with a raw
-        KeyError deep in reconstruction.
+        Raises MemoryLoadError for an unknown version or a malformed payload.
         """
 
         if not isinstance(data, dict):
@@ -194,13 +175,15 @@ class Memory:
 
     @classmethod
     def load_json(cls, raw: str) -> Memory:
-        """Rebuild a Memory from a JSON string produced by dump_json()."""
+        """Rebuild a Memory from dump_json() output.
+
+        Invalid JSON raises json.JSONDecodeError; a bad shape raises
+        MemoryLoadError.
+        """
 
         return cls.from_dict(json.loads(raw))
 
 
-# dataclasses.asdict() converts nested dataclasses to dicts but does not record
-# their types, so the load path rebuilds each nested object explicitly.
 def _chat_message_from_dict(d: dict[str, Any]) -> ChatMessage:
     """Reconstruct a ChatMessage (and its nested ToolCalls/Usage) from a dict."""
 

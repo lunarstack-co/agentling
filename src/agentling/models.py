@@ -25,11 +25,7 @@ OpenAIMessage = dict[str, Any]
 
 @dataclass
 class ToolCall:
-    """A tool call requested by the model.
-
-    This is provider-neutral. Individual model providers can map their own
-    tool-call format into this shape.
-    """
+    """A tool call requested by the model, in agentling's own format."""
 
     id: str
     name: str
@@ -38,11 +34,10 @@ class ToolCall:
 
 @dataclass
 class ToolCallDelta:
-    """A partial tool call emitted during streaming.
+    """A piece of a streamed tool call.
 
-    Tool calls may arrive in chunks, especially the arguments string.
-    The `index` field lets callers merge fragments belonging to the same
-    streamed tool call.
+    The arguments string usually arrives in several pieces. `index` says which
+    tool call a piece belongs to.
     """
 
     index: int
@@ -82,11 +77,9 @@ class Usage:
 
 @dataclass
 class ChatMessage:
-    """A provider-neutral chat message.
+    """A chat message in agentling's own format.
 
-    This is the main message format used internally by the framework.
-    Provider adapters are responsible for converting this into their own
-    API-specific formats.
+    Model adapters convert it to and from their provider's format.
     """
 
     role: Role
@@ -117,11 +110,10 @@ class Model(Protocol):
 
 
 class OpenAIModel:
-    """OpenAI Chat Completions adapter.
+    """Adapter for OpenAI and any OpenAI-compatible chat-completions endpoint.
 
-    Converts the framework's provider-neutral message format into OpenAI's
-    chat-completions format, sends the request, then converts the response
-    back into a `ChatMessage`.
+    Converts agentling's messages to the chat-completions format and the
+    responses back into ChatMessage and Delta.
     """
 
     def __init__(
@@ -140,7 +132,8 @@ class OpenAIModel:
             api_key: Optional API key. If omitted, the OpenAI SDK will use
                 its default environment-based configuration.
             base_url: Optional custom base URL for OpenAI-compatible providers.
-            context_window: Maximum supported context window for this model.
+            context_window: The model's context window in tokens. Stored for
+                callers; agentling itself doesn't read it.
             max_retries: Number of retries after the initial request.
             retry_base_delay: Initial backoff delay in seconds.
         """
@@ -200,12 +193,10 @@ class OpenAIModel:
     async def _create_with_retry(self, **kwargs: Any) -> Any:
         """Call the OpenAI chat-completions API, retrying transient failures.
 
-        Rate limits, connection/timeout errors, and 5xx responses are retried
-        with exponential backoff, then re-raised once max_retries is exhausted.
-        That is the agent's one fatal path. Permanent errors such as a bad
-        request or bad auth are not retried and propagate immediately. Retries
-        cover establishing the request, including opening a stream; a failure
-        that happens mid-stream is not retried.
+        Rate limits, connection and timeout errors, and 5xx responses are
+        retried with exponential backoff, then re-raised as the SDK's own error.
+        Other errors, such as a bad request or bad auth, are raised at once.
+        Only opening the request or stream is retried, not a failure mid-stream.
         """
 
         total_attempts = max(1, self.max_retries + 1)
@@ -352,11 +343,7 @@ class OpenAIModel:
         ]
 
     def _parse_tool_arguments(self, arguments: str) -> dict[str, Any]:
-        """Parse and validate model-generated tool arguments.
-
-        Thin wrapper over the module-level parse_tool_arguments so the streaming
-        and non-streaming paths validate identically.
-        """
+        """Parse tool arguments with the same rules as the streaming path."""
 
         return parse_tool_arguments(arguments)
 
@@ -373,10 +360,8 @@ class _ToolCallFragment:
 def parse_tool_arguments(arguments: str) -> dict[str, Any]:
     """Parse and validate model-generated tool arguments.
 
-    Tool-call arguments must be a JSON object. Invalid JSON or a non-object
-    value is malformed model output, so this raises ModelOutputError; the agent
-    loop can turn that into a recoverable observation. Both the streaming and
-    non-streaming paths route through here so they validate identically.
+    Arguments must be a JSON object; anything else raises ModelOutputError.
+    The streaming and non-streaming paths both use this so they agree.
     """
 
     try:
@@ -422,8 +407,8 @@ def agglomerate_deltas(deltas: Iterable[Delta]) -> ChatMessage:
 
     tool_calls: list[ToolCall] = []
     for _index, fragment in sorted(fragments.items()):
-        # A tool call needs both an id (to match its result message) and a name;
-        # a missing either one is malformed output the loop can retry.
+        # The id pairs the call with its result message, so both it and the name
+        # are required.
         if not fragment.id:
             raise ModelOutputError("Streamed tool call is missing an id.")
         if not fragment.name:

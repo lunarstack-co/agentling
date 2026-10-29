@@ -18,7 +18,7 @@ from agentling.models import (
 
 
 # --------------------------------------------------------------------------- #
-# Helpers — fake the OpenAI client so no network calls happen.
+# Helpers: a fake OpenAI client, so no network calls happen
 # --------------------------------------------------------------------------- #
 def _make_model(create: Any) -> OpenAIModel:
     """Build an OpenAIModel whose client.chat.completions.create is `create`."""
@@ -145,7 +145,7 @@ def test_parse_tool_arguments_non_object_raises(model: OpenAIModel) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# agglomerate_deltas — reassemble a stream into one ChatMessage
+# agglomerate_deltas: reassemble a stream into one ChatMessage
 # --------------------------------------------------------------------------- #
 def test_agglomerate_concatenates_content() -> None:
     msg = agglomerate_deltas([Delta(content="Hel"), Delta(content="lo"), Delta()])
@@ -364,4 +364,4 @@ async def test_permanent_error_is_not_retried() -> None:
 
     with pytest.raises(openai.BadRequestError):
         await model.generate([ChatMessage(role="user", content="hi")])
-    assert calls == 1  # permanent error fails fast — no retry
+    assert calls == 1  # a permanent error fails at once, with no retry

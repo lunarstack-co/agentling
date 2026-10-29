@@ -48,6 +48,9 @@ plugin) now work, and a running session can gain or lose tools.
 - Loading a skill that declares a tool whose name is already taken by a
   different tool now returns an error to the model instead of silently keeping
   the existing tool.
+- Docstrings now say which errors are reserved and not yet raised
+  (`AgentRunError`, `ToolExecutionError`, `SkillLoadError`), and that provider
+  errors reach the caller unwrapped.
 
 ## [0.1.0] - 2026-07-07
 

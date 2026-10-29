@@ -268,7 +268,7 @@ async def test_streaming_emits_text_deltas() -> None:
 # max_steps forced answer
 # --------------------------------------------------------------------------- #
 async def test_max_steps_forces_a_final_answer() -> None:
-    # The model never terminates on its own — it always calls a tool.
+    # The model never ends the run itself; it always calls a tool.
     looping = [
         _assistant(
             tool_calls=[ToolCall(id=f"c{i}", name="add", arguments={"a": 1, "b": 1})]
@@ -966,7 +966,7 @@ async def test_print_events_writes_to_file_and_returns_answer() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Pre-release edge fixes
+# Edge cases: reserved load_skill name and tiny truncation limits
 # --------------------------------------------------------------------------- #
 def test_load_skill_name_is_reserved_when_skills_are_configured() -> None:
     @tool

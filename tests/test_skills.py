@@ -29,7 +29,7 @@ def _write_skill(folder: Path, text: str) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# Skill.from_path — happy path
+# Skill.from_path: happy path
 # --------------------------------------------------------------------------- #
 def test_from_path_reads_name_description_and_body(tmp_path: Path) -> None:
     folder = _write_skill(
@@ -110,7 +110,7 @@ def test_from_path_preserves_horizontal_rule_in_body(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Skill.from_path — error paths
+# Skill.from_path: error paths
 # --------------------------------------------------------------------------- #
 def test_from_path_missing_name_raises(tmp_path: Path) -> None:
     folder = _write_skill(
