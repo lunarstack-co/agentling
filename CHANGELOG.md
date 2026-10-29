@@ -4,7 +4,7 @@ All notable changes to agentling are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims
 to follow [semantic versioning](https://semver.org/).
 
-## [0.1.1] - Unreleased
+## [0.1.1] - 2026-10-29
 
 Tools whose schemas come from somewhere else (an MCP server, an OpenAPI spec, a
 plugin) now work, and a running session can gain or lose tools.
