@@ -268,7 +268,7 @@ async def test_streaming_emits_text_deltas() -> None:
 # max_steps forced answer
 # --------------------------------------------------------------------------- #
 async def test_max_steps_forces_a_final_answer() -> None:
-    # The model never terminates on its own — it always calls a tool.
+    # The model never ends the run itself; it always calls a tool.
     looping = [
         _assistant(
             tool_calls=[ToolCall(id=f"c{i}", name="add", arguments={"a": 1, "b": 1})]
@@ -391,6 +391,16 @@ async def test_interrupt_stops_run_gracefully() -> None:
     assert await session.run("loop") == "Run interrupted."
     assert isinstance(session.memory.steps[-1], ActionStep)  # paused before a FinalStep
     assert len(model.calls) == 1
+
+
+async def test_interrupt_while_idle_stops_the_next_run() -> None:
+    model = FakeModel([_assistant(content="unreached")])
+    session = Agent(model=model).start()
+
+    session.interrupt()
+
+    assert await session.run("task") == "Run interrupted."
+    assert model.calls == []
 
 
 async def test_interrupt_then_resume_completes() -> None:
@@ -966,7 +976,7 @@ async def test_print_events_writes_to_file_and_returns_answer() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Pre-release edge fixes
+# Edge cases: reserved load_skill name and tiny truncation limits
 # --------------------------------------------------------------------------- #
 def test_load_skill_name_is_reserved_when_skills_are_configured() -> None:
     @tool

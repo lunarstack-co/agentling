@@ -1,8 +1,7 @@
-"""Tool primitives and schema generation utilities.
+"""Tools: the Tool base class, the @tool decorator, argument checks and final_answer.
 
-This module defines the framework's tool abstraction, the @tool decorator for
-wrapping Python functions, lightweight argument validation, and the built-in
-final_answer tool used to terminate agent runs explicitly.
+@tool turns a Python function into a Tool and builds its JSON Schema from type
+hints and the docstring. Tools defined from an existing schema subclass Tool.
 """
 
 from __future__ import annotations
@@ -23,26 +22,25 @@ JsonSchema = dict[str, Any]
 
 
 class ToolCallError(AgentlingError):
-    """Raised when a tool receives invalid model-generated arguments.
+    """A tool call had bad arguments.
 
-    Agent loops can catch this error and return it to the model as an
-    observation, allowing the model to recover from invalid tool calls without
-    aborting the run.
+    Raised by argument validation, and tools may raise it themselves. The agent
+    loop shows the message to the model so it can fix the call.
     """
 
 
 class Tool:
-    """Base class for executable tools.
+    """Base class for tools.
 
-    Subclass this for stateful tools. For simple stateless functions, prefer the
-    @tool decorator.
+    Subclass it for tools that keep state or whose schema comes from elsewhere,
+    and set `name`, `description` and `parameters`. For a plain function, use
+    @tool instead.
     """
 
     name: str
     description: str
     parameters: JsonSchema
-    # Optional per-tool time budget in seconds. None means use the agent's
-    # tool_timeout default (which is itself None unless the caller sets it).
+    # None means use the agent's tool_timeout.
     timeout: float | None = None
     # Whether this tool is safe to run concurrently with others in the same
     # step. If any tool in a step is not parallel_safe, the step runs in order.
@@ -54,11 +52,7 @@ class Tool:
     validate_arguments: bool = True
 
     async def forward(self, **kwargs: Any) -> Any:
-        """Execute the tool implementation.
-
-        Subclasses should override this method. Arguments are validated by
-        call() before this method is invoked.
-        """
+        """Run the tool. Subclasses override this; call() validates first."""
 
         raise NotImplementedError
 
@@ -75,12 +69,7 @@ class Tool:
         }
 
     async def call(self, arguments: dict[str, Any]) -> Any:
-        """Validate model-generated arguments and execute the tool.
-
-        This is the agent loop entry point. Invalid arguments raise
-        ToolCallError so the loop can expose the validation failure back to the
-        model.
-        """
+        """Validate the arguments, then run the tool. The agent loop calls this."""
 
         if not isinstance(arguments, dict):
             raise ToolCallError(
@@ -163,8 +152,7 @@ _JSON_TYPES: dict[type, str] = {
     dict: "object",
 }
 
-# JSON Schema type name -> Python runtime type(s).
-# Used for lightweight validation of model-generated arguments.
+# JSON Schema type name -> Python type(s), for argument validation.
 _PY_TYPES: dict[str, type | tuple[type, ...]] = {
     "string": str,
     "integer": int,
@@ -202,9 +190,8 @@ def _matches_json_type(value: Any, json_type: Any) -> bool:
 def _schema_for_type(python_type: Any) -> JsonSchema:
     """Convert a Python type hint into a JSON Schema property schema.
 
-    This intentionally supports a small, practical subset of Python typing:
-    primitive types, list/dict generics, Optional/Union with None, and Literal.
-    Unsupported or ambiguous types fall back to string.
+    Handles primitive types, list and dict, Optional (X | None) and Literal.
+    Anything else falls back to string.
     """
 
     origin = get_origin(python_type)
@@ -271,9 +258,8 @@ _ARG_RE = re.compile(r"^(\w+)\s*(?:\([^)]*\))?:\s*(.*)$")
 def _parse_docstring(func: Callable[..., Any]) -> tuple[str, dict[str, str]]:
     """Extract a summary and argument descriptions from a docstring.
 
-    This is a pragmatic Google-style parser, not a complete docstring parser.
-    It recognizes Args/Arguments/Parameters sections and stops parsing argument
-    descriptions when another section header is encountered.
+    Reads a Google-style Args (or Arguments, Parameters) section and stops at
+    the next section header. It is not a full docstring parser.
     """
 
     doc = inspect.getdoc(func) or ""
@@ -326,9 +312,8 @@ def _build_schema(func: Callable[..., Any]) -> JsonSchema:
         if name in {"self", "cls"}:
             continue
 
-        # Tools are invoked with a JSON object of named arguments. Variadic and
-        # positional-only parameters cannot be represented safely, so reject
-        # them during tool registration rather than failing during a model run.
+        # Tools are called with a JSON object of named arguments, which can't
+        # fill *args, **kwargs or positional-only parameters, so reject them now.
         if param.kind in {
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
@@ -464,11 +449,10 @@ def tool(
 
 
 class FinalAnswerTool(Tool):
-    """Built-in tool used to return the final answer from an agent run.
+    """Built-in tool the model can call to end the run with an answer.
 
-    Including final_answer in the tool set makes termination explicit: the model
-    signals completion by calling this tool instead of the loop inferring that a
-    normal assistant message should end the run.
+    A reply with no tool calls also ends the run. This gives the model an
+    explicit way to finish.
     """
 
     name = "final_answer"
@@ -486,7 +470,5 @@ class FinalAnswerTool(Tool):
     }
 
     async def forward(self, answer: str) -> str:  # type: ignore[override]
-        # The public Tool.forward signature accepts **kwargs because tools are
-        # invoked generically. This implementation is intentionally narrower
-        # because call() validates arguments against the schema before dispatch.
+        # Narrower than Tool.forward(**kwargs); safe because call() validates first.
         return answer

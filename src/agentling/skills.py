@@ -1,11 +1,9 @@
-"""Markdown skills with progressive disclosure.
+"""Markdown skills, loaded on demand.
 
-A skill is a folder containing a SKILL.md file: YAML frontmatter (name,
-description, and optional tool entry points) followed by a markdown body of
-instructions. Only the name and description are shown to the model up front, in
-a catalog appended to the system prompt. The full body, and any tools the skill
-declares, are revealed on demand when the model calls the built-in load_skill
-tool. That keeps the base context small until a skill is actually needed.
+A skill is a folder with a SKILL.md: YAML frontmatter (name, description and
+optional tool entry points) and a markdown body of instructions. The model sees
+only the name and description until it calls load_skill, which returns the body
+and registers the skill's tools. This keeps the prompt small.
 """
 
 from __future__ import annotations
@@ -24,13 +22,11 @@ SKILL_FILE = "SKILL.md"
 
 @dataclass
 class Skill:
-    """A loadable unit of instructions plus optional tools.
+    """Instructions plus optional tools that the model loads when it needs them.
 
-    name and description are cheap metadata for the catalog. instructions is the
-    full markdown body, revealed only when the skill is loaded. tools lists
-    Python entry points ("package.module:attribute") that resolve to Tool
-    objects and are registered at load time. path is the skill's folder, so the
-    instructions can reference files bundled alongside SKILL.md.
+    `tools` holds entry points ("package.module:attribute") that resolve to Tool
+    objects when the skill is loaded. `path` is the skill's folder, so the
+    instructions can refer to files next to SKILL.md.
     """
 
     name: str
@@ -41,7 +37,13 @@ class Skill:
 
     @classmethod
     def from_path(cls, path: str | Path) -> Skill:
-        """Load a Skill from a folder containing a SKILL.md file."""
+        """Load a Skill from a folder containing a SKILL.md file.
+
+        Raises ValueError if the frontmatter is missing a field, isn't a
+        mapping, or has a `tools` value that isn't a list of strings;
+        yaml.YAMLError if the YAML doesn't parse; and OSError if SKILL.md
+        can't be read.
+        """
 
         folder = Path(path)
         source = (folder / SKILL_FILE).read_text(encoding="utf-8")
@@ -74,7 +76,11 @@ class Skill:
         )
 
     def load_tools(self) -> list[Tool]:
-        """Import and return the Tool objects named in this skill's frontmatter."""
+        """Import and return the Tool objects named in this skill's frontmatter.
+
+        Raises ValueError for an entry point without a colon, TypeError if it
+        doesn't resolve to a Tool, and the usual import errors if it can't load.
+        """
 
         return [_resolve_tool(spec) for spec in self.tools]
 
@@ -82,17 +88,15 @@ class Skill:
 def _split_frontmatter(source: str) -> tuple[dict[str, Any], str]:
     """Split a SKILL.md into its YAML frontmatter dict and markdown body.
 
-    Frontmatter is delimited by two fence lines, each exactly '---' on its own.
-    A file whose first line is not exactly '---' is treated as all body, so a
-    '---' horizontal rule inside the body is never mistaken for a fence.
+    Frontmatter sits between two lines that are exactly '---'. A file that
+    doesn't start with one is all body, and only the first closing fence counts,
+    so a '---' rule in the body is left alone.
     """
 
     lines = source.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
         return {}, source
 
-    # The body starts after the first closing fence, so a later '---' in the
-    # body is left untouched.
     for index in range(1, len(lines)):
         if lines[index].strip() == "---":
             data = yaml.safe_load("".join(lines[1:index])) or {}

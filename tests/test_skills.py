@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from agentling.skills import Skill, _resolve_tool, _split_frontmatter
 from agentling.tools import tool
@@ -29,7 +30,7 @@ def _write_skill(folder: Path, text: str) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# Skill.from_path — happy path
+# Skill.from_path: happy path
 # --------------------------------------------------------------------------- #
 def test_from_path_reads_name_description_and_body(tmp_path: Path) -> None:
     folder = _write_skill(
@@ -110,8 +111,20 @@ def test_from_path_preserves_horizontal_rule_in_body(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Skill.from_path — error paths
+# Skill.from_path: error paths
 # --------------------------------------------------------------------------- #
+def test_from_path_unparseable_yaml_raises_yaml_error(tmp_path: Path) -> None:
+    folder = _write_skill(tmp_path / "s", "---\nname: [x\n---\nbody\n")
+
+    with pytest.raises(yaml.YAMLError):
+        Skill.from_path(folder)
+
+
+def test_from_path_missing_skill_file_raises_os_error(tmp_path: Path) -> None:
+    with pytest.raises(OSError):
+        Skill.from_path(tmp_path)
+
+
 def test_from_path_missing_name_raises(tmp_path: Path) -> None:
     folder = _write_skill(
         tmp_path / "s",

@@ -1,16 +1,13 @@
-"""Streaming events emitted by the agent loop.
+"""Events the agent loop yields while a run is streaming.
 
-Memory is the durable, structured record of a run. Events are runtime
-notifications emitted as the run progresses, letting callers render output,
-inspect tool execution, and react to completion in real time.
+There are five: TextDelta, ToolCallEvent, ToolResultEvent, StepEvent and
+FinalEvent. Memory is the saved record of a run; events are the live view of it,
+and StepEvent carries each step as it is recorded.
 
-StepEvent connects the live event stream to memory by carrying the step that
-was just recorded.
-
-Ordering within a run is deterministic: a turn's TextDelta chunks arrive in
-order, then every ToolCallEvent for the step, then every ToolResultEvent in the
-same call order, then the StepEvent for that step. Exactly one FinalEvent is
-emitted, last.
+Within a step the order is fixed: its TextDelta chunks, then every
+ToolCallEvent, then every ToolResultEvent in the same order, then the StepEvent.
+A run that ends normally emits exactly one FinalEvent, last. A run that fails
+raises instead.
 """
 
 from __future__ import annotations
@@ -58,9 +55,8 @@ class StepEvent:
 class FinalEvent:
     """Emitted once when the run ends, carrying the answer, usage, and status.
 
-    status is how the run ended: "completed" (the model finished), "interrupted"
-    (a caller interrupted it), or "max_steps" (the step limit was hit and a final
-    answer was forced). Failures the run cannot recover from raise instead.
+    status is "completed" (the model finished), "interrupted" (a caller
+    interrupted it) or "max_steps" (the step limit forced a final answer).
     """
 
     answer: str
@@ -68,7 +64,6 @@ class FinalEvent:
     status: RunStatus = "completed"
 
 
-# Public union type for the values yielded by the agent's event stream.
 Event = TextDelta | ToolCallEvent | ToolResultEvent | StepEvent | FinalEvent
 
 
@@ -83,11 +78,9 @@ async def print_events(
 ) -> str:
     """Render an agent's event stream as it arrives.
 
-    Consumes the iterator from Agent.run(..., stream=True): assistant text
-    prints token by token, each tool call and its result get their own line,
-    and the final answer is shown at the end. Returns that answer so the caller
-    can keep using it once the run has been displayed. Output goes to file, or
-    to stdout when file is None.
+    Takes the iterator from run(..., stream=True). Text prints as it streams,
+    each tool call and result gets its own line, and the final answer prints
+    last. Returns the final answer. Writes to `file`, or stdout if it is None.
     """
 
     answer = ""

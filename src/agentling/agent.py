@@ -1,21 +1,15 @@
 """The agent loop.
 
-Agent holds immutable configuration (a Model, some Tools, some Skills, and the
-run settings) and acts as a factory for sessions. AgentSession owns one
-conversation's mutable state (a Memory of typed steps, an interrupt token, and
-its own tool set) and runs the ReAct loop.
+Agent holds the configuration (model, tools, skills, settings) and creates
+sessions. AgentSession holds one conversation's state (memory, interrupt flag,
+its own tool set) and runs the ReAct loop. One Agent can therefore serve many
+concurrent runs without their memory, interrupts or tools mixing.
 
-Splitting the two means a single Agent can be built once and shared safely
-across concurrent runs: each run gets its own AgentSession, so memories,
-interrupts, and dynamically loaded skill tools never leak between them.
+AgentSession._run_stream does the work and yields Events. run() returns that
+stream when stream=True, or drains it and returns the final answer.
 
-One async generator, AgentSession._run_stream, does the real work and yields
-Events. run() is a thin dispatcher: it hands back that stream when stream is
-True, or drains it and returns the final answer otherwise.
-
-Skills are disclosed progressively: only their names and descriptions are added
-to the system prompt up front. The full instructions, and any tools a skill
-declares, arrive when the model calls the built-in load_skill tool.
+Only skill names and descriptions go into the system prompt. A skill's full
+instructions and tools arrive when the model calls load_skill.
 """
 
 from __future__ import annotations
@@ -69,12 +63,11 @@ logger = logging.getLogger("agentling")
 
 
 class Agent:
-    """Immutable configuration and a factory for sessions.
+    """Configuration shared by every run, and a factory for sessions.
 
-    An Agent bundles a Model, the base Tools (final_answer is always added),
-    Skills, and the run settings. It holds no per-run state, so one Agent can be
-    built once and shared across many concurrent runs. Call start() for a fresh
-    session, or run() for a one-shot convenience run.
+    Holds the model, the base tools (final_answer is always added), the skills
+    and the run settings, but no per-run state. Call start() for a session, or
+    run() for a one-off run.
     """
 
     def __init__(
@@ -102,18 +95,14 @@ class Agent:
         self.model_timeout = model_timeout
         self.max_tool_output_chars = max_tool_output_chars
         self.redact_errors = redact_errors
-        # Optional hook to trim or summarize the prompt before each model call,
-        # so long runs do not blow the context window. It receives the full
-        # message list and returns the (possibly shorter) list to send.
+        # Trims or summarises the messages before each model call so long runs
+        # fit the context window.
         self.context_manager = context_manager
-        # Default callbacks applied to every session. A session copies these and
-        # may append its own.
+        # Each session copies these and may add its own.
         self.step_callbacks = list(step_callbacks)
 
-        # Base tool set: the caller's tools plus the always-available
-        # final_answer. A duplicate name here is a programming error, so fail
-        # loudly rather than letting one tool shadow another. Each session gets
-        # its own copy of this set (see AgentSession).
+        # Fail on a duplicate name rather than let one tool shadow another. Each
+        # session gets its own copy of this set.
         base_tools: dict[str, Tool] = {}
         for base_tool in (*tools, FinalAnswerTool()):
             _check_tool(base_tool)
@@ -122,17 +111,12 @@ class Agent:
             base_tools[base_tool.name] = base_tool
         self._base_tools = base_tools
 
-        # Load skills up front but reveal only their names and descriptions. The
-        # full instructions and any skill tools arrive when the model calls
-        # load_skill, which keeps the base context small (progressive disclosure).
         self.skills: dict[str, Skill] = {
             skill.name: skill for skill in (_as_skill(entry) for entry in skills)
         }
         self.instructions = instructions or DEFAULT_INSTRUCTIONS
         if self.skills:
-            # load_skill is the built-in that sessions register to reveal skills.
-            # A caller tool of the same name would silently shadow it, so reserve
-            # the name loudly instead.
+            # A caller's tool named load_skill would hide the built-in one.
             if "load_skill" in self._base_tools:
                 raise ValueError(
                     "'load_skill' is a reserved tool name when skills are "
@@ -173,12 +157,10 @@ class Agent:
         reset: bool = True,
         max_steps: int | None = None,
     ) -> Awaitable[str] | AsyncIterator[Event]:
-        """Run a task on a fresh one-shot session.
+        """Run a task on a new session and discard it.
 
-        Convenience for the common single-run case. Each call gets its own
-        session, so concurrent calls on one Agent stay isolated. For a multi-turn
-        conversation, or to inspect memory afterwards, use start() and hold on to
-        the session.
+        Concurrent calls each get their own session. For a multi-turn
+        conversation, or to read the memory afterwards, use start().
         """
 
         session = self.start()
@@ -292,12 +274,12 @@ class AgentSession:
         reset: bool = True,
         max_steps: int | None = None,
     ) -> Awaitable[str] | AsyncIterator[Event]:
-        """Run the agent on a task within this session.
+        """Run a task in this session.
 
-        With stream=False (the default) this returns an awaitable that resolves
-        to the final answer string. With stream=True it returns an async iterator
-        of Events. Pass reset=False to continue from this session's existing
-        memory (multi-turn).
+        Returns an awaitable of the final answer, or with stream=True an async
+        iterator of Events. reset=False continues from the existing memory.
+        Raises ModelError if the model times out or keeps sending unparseable
+        tool calls.
         """
 
         events = self._run_stream(task, reset=reset, max_steps=max_steps)
@@ -329,11 +311,11 @@ class AgentSession:
 
         limit = self.agent.max_steps if max_steps is None else max_steps
 
-        # Remember the previous step's calls so we can spot an exact repeat.
+        # The previous step's calls, to spot an exact repeat.
         previous_signature: tuple[tuple[str, str], ...] | None = None
 
-        # Corrective user messages appended to the prompt after the model emits
-        # unparseable output, so it can retry. Cleared once a turn parses.
+        # Sent after unparseable output so the model can retry; cleared once a
+        # turn parses.
         correction_notes: list[ChatMessage] = []
         malformed_retries = 0
         total_usage = Usage(0, 0)
@@ -352,10 +334,8 @@ class AgentSession:
             if self.agent.context_manager is not None:
                 messages = self.agent.context_manager(messages)
 
-            # Stream the model turn: emit text as it arrives, then rebuild the
-            # full ChatMessage from the deltas for the rest of the step to use.
-            # model_timeout bounds a hung turn, and the per-chunk interrupt check
-            # lets a long stream be stopped without waiting for it to finish.
+            # Checking the interrupt per chunk lets a long stream stop early;
+            # model_timeout bounds a turn that hangs.
             deltas: list[Delta] = []
             interrupted = False
             try:
@@ -381,9 +361,8 @@ class AgentSession:
                 )
                 return
 
-            # Malformed tool calls (bad JSON, missing id or name) are recoverable:
-            # re-prompt the model with a correction, up to a small cap, rather
-            # than crashing the run.
+            # A malformed tool call gets a correction and another try, up to
+            # _MAX_MALFORMED_RETRIES times in a row.
             try:
                 response = agglomerate_deltas(deltas)
             except ModelOutputError as exc:
@@ -405,19 +384,17 @@ class AgentSession:
                 )
                 continue
 
-            # A well-formed turn clears any accumulated corrections.
             correction_notes.clear()
             malformed_retries = 0
             if response.usage is not None:
                 total_usage = total_usage + response.usage
 
-            # Forgiving termination: no tool calls means the content is the answer.
+            # A reply with no tool calls is the answer.
             if not response.tool_calls:
                 self.memory.add(FinalStep(answer=response.content))
                 yield FinalEvent(answer=response.content, usage=total_usage)
                 return
 
-            # Fingerprint this step's calls: (name, canonical JSON args) each.
             signature = tuple(
                 (tc.name, json.dumps(tc.arguments, sort_keys=True))
                 for tc in response.tool_calls
@@ -428,9 +405,7 @@ class AgentSession:
             for tool_call in response.tool_calls:
                 yield ToolCallEvent(tool_call=tool_call)
 
-            # Run this step's tools concurrently only when the agent allows it
-            # and every tool in the step is parallel_safe; otherwise run them in
-            # order so a side-effectful tool cannot interleave with others.
+            # One tool that isn't parallel_safe makes the whole step run in order.
             step_tools = [self.tools.get(tc.name) for tc in response.tool_calls]
             run_parallel = self.agent.parallel_tools and all(
                 t is None or t.parallel_safe for t in step_tools
@@ -460,7 +435,7 @@ class AgentSession:
                 callback(action)
             yield StepEvent(step=action)
 
-            # Explicit termination: the model called final_answer (successfully).
+            # A successful final_answer call ends the run.
             final = next(
                 (r for r in results if r.name == "final_answer" and not r.is_error),
                 None,
@@ -517,7 +492,6 @@ class AgentSession:
                 is_error=True,
                 error_kind="unknown_tool",
             )
-        # A per-tool timeout overrides the agent-wide default.
         timeout = tool.timeout if tool.timeout is not None else self.agent.tool_timeout
         try:
             if timeout is not None:
@@ -525,9 +499,8 @@ class AgentSession:
             else:
                 output = await tool.call(tool_call.arguments)
         except TimeoutError:
-            # A slow tool is an observation, not a crash. A genuine task
-            # cancellation raises CancelledError (a BaseException), which is
-            # deliberately not caught here so it propagates and stops the run.
+            # A slow tool becomes an observation. CancelledError is a
+            # BaseException, so a real cancellation still stops the run.
             err = ToolTimeoutError(
                 f"tool {tool_call.name!r} exceeded its {timeout}s timeout"
             )
@@ -539,8 +512,8 @@ class AgentSession:
                 error_kind="timeout",
             )
         except ToolCallError as exc:
-            # Invalid-argument errors are safe and useful, so the model always
-            # sees them in full to correct its call.
+            # Shown in full even with redact_errors: the model needs it to fix
+            # the call.
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
@@ -549,9 +522,8 @@ class AgentSession:
                 error_kind="validation",
             )
         except Exception as exc:
-            # An unexpected tool failure becomes an observation the model can
-            # recover from. With redact_errors the message (which may carry
-            # secrets or internal detail) is suppressed and logged instead.
+            # The message may hold secrets, so redact_errors logs it instead of
+            # showing it to the model.
             if self.agent.redact_errors:
                 logger.exception("Tool %r raised", tool_call.name)
                 content = (
@@ -621,30 +593,27 @@ class AgentSession:
         return load_skill
 
     def interrupt(self) -> None:
-        """Request a graceful stop before the next step.
+        """Ask the current run to stop at the next step or streamed chunk.
 
-        The current run pauses rather than crashing; resume it later by calling
-        run(..., reset=False) on this same session, which continues from the
-        steps already in memory.
+        The run ends with a FinalEvent whose status is "interrupted". If no run
+        is active, the next run stops at its first step. Call
+        run(..., reset=False) on this session to carry on from its memory.
         """
 
         self._interrupt.set()
 
 
 def _truncate_middle(text: str, limit: int) -> str:
-    """Trim the middle of an over-long string, keeping the head and tail.
+    """Cut the middle of a long string, keeping the start and end.
 
-    Large tool outputs can flood the context window; keeping both ends preserves
-    the most useful parts (a summary at the top, a result at the bottom) while
-    bounding size.
+    Tool output often has a summary at the top and the result at the bottom.
     """
 
     if len(text) <= limit:
         return text
     keep = limit // 2
     if keep <= 0:
-        # The limit is too small for a head+tail window (0 or 1), so just cut
-        # the head. text[-0:] would otherwise return the whole string.
+        # Too small to keep both ends, and text[-0:] would return everything.
         return text[:limit]
     omitted = len(text) - 2 * keep
     return f"{text[:keep]}\n... [{omitted} characters omitted] ...\n{text[-keep:]}"
@@ -657,11 +626,7 @@ def _as_skill(entry: Skill | str | Path) -> Skill:
 
 
 def _skill_catalog(skills: Iterable[Skill]) -> str:
-    """Render the skill catalog appended to the system prompt.
-
-    Only names and descriptions are listed. The full instructions stay out of
-    the prompt until the model loads a skill (progressive disclosure).
-    """
+    """Render the skill names and descriptions appended to the system prompt."""
 
     lines = "\n".join(f"- {skill.name}: {skill.description}" for skill in skills)
     return (

@@ -1,56 +1,66 @@
 """Exception hierarchy for agentling.
 
-Everything the framework raises descends from AgentlingError, so a host can
-catch all of it with a single except. The subclasses mark the failure domain,
-which is what lets different layers treat them differently: some are fatal, some
-are surfaced back to the model as recoverable observations, and some are
-user-facing configuration errors.
+agentling's own errors descend from AgentlingError. Other exceptions can still
+reach the caller: ValueError and TypeError for bad configuration, and the
+provider SDK's errors (such as openai.APIError) once retries are used up.
 """
 
 from __future__ import annotations
 
 
 class AgentlingError(Exception):
-    """Base class for every error raised by agentling."""
+    """Base class for agentling's own errors."""
 
 
 class AgentRunError(AgentlingError):
     """A run could not start or continue.
 
-    Raised for lifecycle violations such as starting a second run on state that
-    is already in use.
+    Reserved: agentling does not raise this yet. It is exported so code can
+    catch it once it does.
     """
 
 
 class ModelError(AgentlingError):
-    """A model provider failed in a way the run cannot recover from."""
+    """The run stopped because of the model.
+
+    Raised when a model turn times out (`model_timeout`) or the model keeps
+    producing tool calls that can't be parsed.
+    """
 
 
 class ModelOutputError(AgentlingError):
-    """The model produced output the framework could not parse.
+    """The model produced a tool call that couldn't be parsed.
 
-    Raised for malformed streamed tool calls (invalid JSON arguments, a
-    non-object arguments payload, a missing tool name, or a missing tool-call
-    id). The agent loop can turn this into a recoverable observation so the
-    model gets a chance to retry.
+    Covers invalid or non-object JSON arguments and a missing tool name or id.
+    The agent loop catches it and asks the model to try again, up to twice,
+    before raising ModelError.
     """
 
 
 class ToolExecutionError(AgentlingError):
-    """A tool failed unexpectedly while executing.
+    """A tool failed while running, as opposed to receiving bad arguments.
 
-    This is distinct from ToolCallError, which signals invalid model-supplied
-    arguments. ToolExecutionError covers failures inside the tool itself.
+    Reserved: agentling does not raise this yet. Tool failures reach the model
+    as error observations instead.
     """
 
 
 class ToolTimeoutError(ToolExecutionError):
-    """A tool did not finish within its allotted time."""
+    """A tool ran past its timeout.
+
+    The loop does not raise it. It uses it to word the error observation the
+    model sees.
+    """
 
 
 class MemoryLoadError(AgentlingError):
-    """Serialized memory could not be loaded (unknown version or bad shape)."""
+    """Saved memory could not be loaded (unknown version or bad shape)."""
 
 
 class SkillLoadError(AgentlingError):
-    """A skill could not be loaded from its SKILL.md."""
+    """A skill could not be loaded.
+
+    Reserved: agentling does not raise this yet. Today a bad SKILL.md raises
+    ValueError or yaml.YAMLError, and a bad tool entry point raises ValueError
+    or TypeError.
+    """

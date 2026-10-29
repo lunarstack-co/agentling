@@ -4,9 +4,9 @@ Runs fully offline with a scripted model, so no API key is needed:
 
     uv run python examples/cli_advanced_observer.py
 
-Iterates the streaming event API directly and prints each TextDelta, tool call,
-tool result, step, and the final event. It also wires a context_manager that
-trims the prompt and sets a model_timeout budget, two of the production knobs.
+Iterates the event stream directly and prints each TextDelta, tool call, tool
+result, step and the final event. It also sets a context_manager that trims the
+prompt, and a model_timeout.
 """
 
 from __future__ import annotations

@@ -4,10 +4,10 @@ Needs an OpenAI-compatible API key (set OPENAI_API_KEY):
 
     uv run python examples/cli_notes_agent.py
 
-Demonstrates practical file tools sandboxed to a notes directory, an async
-tool (search), a non-parallel-safe mutating tool (add), and the production
-knobs tool_timeout and redact_errors. build_agent() takes an optional model so
-tests run offline against a temporary directory.
+Shows file tools limited to a notes directory, an async tool (search), a tool
+that writes and so isn't parallel_safe (add), and the tool_timeout and
+redact_errors settings. build_agent() takes an optional model so tests run
+offline against a temporary directory.
 """
 
 from __future__ import annotations
