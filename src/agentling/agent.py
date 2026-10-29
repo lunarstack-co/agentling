@@ -595,7 +595,8 @@ class AgentSession:
     def interrupt(self) -> None:
         """Ask the current run to stop at the next step or streamed chunk.
 
-        The run ends with a FinalEvent whose status is "interrupted". Call
+        The run ends with a FinalEvent whose status is "interrupted". If no run
+        is active, the next run stops at its first step. Call
         run(..., reset=False) on this session to carry on from its memory.
         """
 

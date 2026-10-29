@@ -60,6 +60,7 @@ class MemoryLoadError(AgentlingError):
 class SkillLoadError(AgentlingError):
     """A skill could not be loaded.
 
-    Reserved: agentling does not raise this yet. Today a malformed SKILL.md
-    raises ValueError, and a bad tool entry point raises ValueError or TypeError.
+    Reserved: agentling does not raise this yet. Today a bad SKILL.md raises
+    ValueError or yaml.YAMLError, and a bad tool entry point raises ValueError
+    or TypeError.
     """

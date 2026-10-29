@@ -39,8 +39,10 @@ class Skill:
     def from_path(cls, path: str | Path) -> Skill:
         """Load a Skill from a folder containing a SKILL.md file.
 
-        Raises ValueError if the frontmatter is malformed, lacks name or
-        description, or has a `tools` value that isn't a list of strings.
+        Raises ValueError if the frontmatter is missing a field, isn't a
+        mapping, or has a `tools` value that isn't a list of strings;
+        yaml.YAMLError if the YAML doesn't parse; and OSError if SKILL.md
+        can't be read.
         """
 
         folder = Path(path)

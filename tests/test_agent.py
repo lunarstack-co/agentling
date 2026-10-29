@@ -393,6 +393,16 @@ async def test_interrupt_stops_run_gracefully() -> None:
     assert len(model.calls) == 1
 
 
+async def test_interrupt_while_idle_stops_the_next_run() -> None:
+    model = FakeModel([_assistant(content="unreached")])
+    session = Agent(model=model).start()
+
+    session.interrupt()
+
+    assert await session.run("task") == "Run interrupted."
+    assert model.calls == []
+
+
 async def test_interrupt_then_resume_completes() -> None:
     model = FakeModel(
         [
