@@ -63,15 +63,18 @@ project needs an account-scoped token; use a project-scoped token afterward.
 uv publish --publish-url https://test.pypi.org/legacy/
 ```
 
-Install it back in a throwaway environment. agentling has real dependencies, so
-`--extra-index-url` is required (TestPyPI does not host them):
+Install it back in a throwaway environment. Install the dependencies from PyPI
+first, then agentling alone from TestPyPI. A single command with
+`--extra-index-url` does not work: uv searches the extra index first and stops
+at the first index that has the package, so it finds an older agentling on
+PyPI. Installing in two steps also keeps dependencies off TestPyPI, where
+anyone can upload a package under any name.
 
 ```bash
 uv venv /tmp/testpypi
-uv pip install --python /tmp/testpypi \
-  --index-url https://test.pypi.org/simple/ \
-  --extra-index-url https://pypi.org/simple/ \
-  agentling
+uv pip install --python /tmp/testpypi -r pyproject.toml
+uv pip install --python /tmp/testpypi --no-deps \
+  --index-url https://test.pypi.org/simple/ "agentling==X.Y.Z"
 /tmp/testpypi/bin/python -c "import agentling; print(agentling.__version__)"
 unset UV_PUBLISH_TOKEN && rm -rf /tmp/testpypi
 ```
