@@ -50,6 +50,8 @@ class Tool:
     # Optional cap on observation length in characters. None means use the
     # agent's max_tool_output_chars default.
     max_output_chars: int | None = None
+    # Set False when something else, such as a remote server, validates.
+    validate_arguments: bool = True
 
     async def forward(self, **kwargs: Any) -> Any:
         """Execute the tool implementation.
@@ -86,30 +88,56 @@ class Tool:
                 f"got {type(arguments).__name__}"
             )
 
-        self._validate(arguments)
+        self.validate(arguments)
         return await self.forward(**arguments)
 
+    def validate(self, arguments: dict[str, Any]) -> None:
+        """Raise ToolCallError if arguments don't fit `parameters`.
+
+        Does nothing when `validate_arguments` is False.
+        """
+
+        if self.validate_arguments:
+            self._validate(arguments)
+
     def _validate(self, arguments: dict[str, Any]) -> None:
-        """Validate arguments against the tool's JSON Schema subset."""
+        """Validate arguments against a small JSON Schema subset.
 
-        properties: dict[str, Any] = self.parameters.get("properties", {})
-        required: list[str] = self.parameters.get("required", [])
+        Keywords outside the subset (anyOf, $ref, format, ...) are not checked,
+        so a call the real schema allows is never refused.
+        """
 
-        missing = [name for name in required if name not in arguments]
+        schema: dict[str, Any] = (
+            self.parameters if isinstance(self.parameters, dict) else {}
+        )
+        raw_properties = schema.get("properties")
+        properties: dict[str, Any] = (
+            raw_properties if isinstance(raw_properties, dict) else {}
+        )
+        raw_required = schema.get("required")
+        required: list[Any] = raw_required if isinstance(raw_required, list) else []
+
+        missing = [
+            name for name in required if isinstance(name, str) and name not in arguments
+        ]
         if missing:
             raise ToolCallError(
                 f"Tool {self.name!r} is missing required argument(s): "
                 f"{', '.join(missing)}"
             )
 
-        unknown = [name for name in arguments if name not in properties]
-        if unknown:
-            raise ToolCallError(
-                f"Tool {self.name!r} got unexpected argument(s): {', '.join(unknown)}"
-            )
+        if schema.get("additionalProperties") is False:
+            unknown = [name for name in arguments if name not in properties]
+            if unknown:
+                raise ToolCallError(
+                    f"Tool {self.name!r} got unexpected argument(s): "
+                    f"{', '.join(unknown)}"
+                )
 
         for name, value in arguments.items():
-            spec = properties[name]
+            spec = properties.get(name)
+            if not isinstance(spec, dict):
+                continue
 
             expected = spec.get("type")
             if expected and not _matches_json_type(value, expected):
@@ -119,7 +147,7 @@ class Tool:
                 )
 
             enum = spec.get("enum")
-            if enum is not None and value not in enum:
+            if isinstance(enum, list) and value not in enum:
                 raise ToolCallError(
                     f"Tool {self.name!r} argument {name!r} must be one of {enum}, "
                     f"got {value!r}"
@@ -144,19 +172,31 @@ _PY_TYPES: dict[str, type | tuple[type, ...]] = {
     "boolean": bool,
     "array": list,
     "object": dict,
+    "null": type(None),
 }
 
 
-def _matches_json_type(value: Any, json_type: str) -> bool:
-    """Return whether a value matches a JSON Schema primitive type."""
+def _matches_json_type(value: Any, json_type: Any) -> bool:
+    """Return whether a value matches a JSON Schema `type` (a name or a list).
+
+    Unknown type names match anything.
+    """
+
+    if isinstance(json_type, list):
+        return any(_matches_json_type(value, member) for member in json_type)
+    if not isinstance(json_type, str):
+        return True
+
+    expected = _PY_TYPES.get(json_type)
+    if expected is None:
+        return True
 
     # bool is a subclass of int in Python. Treat it as a distinct JSON boolean
     # so True/False are not accepted for integer or number fields.
     if isinstance(value, bool):
         return json_type == "boolean"
 
-    expected = _PY_TYPES.get(json_type)
-    return expected is None or isinstance(value, expected)
+    return isinstance(value, expected)
 
 
 def _schema_for_type(python_type: Any) -> JsonSchema:
@@ -320,7 +360,25 @@ def _build_schema(func: Callable[..., Any]) -> JsonSchema:
     }
 
 
-_VALID_TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_VALID_TOOL_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _check_tool(candidate: Tool) -> None:
+    """Raise ValueError if a tool's name or parameters can't be sent to a model."""
+
+    name = getattr(candidate, "name", None)
+    if not isinstance(name, str) or not _VALID_TOOL_NAME.fullmatch(name):
+        raise ValueError(
+            f"Tool name {name!r} is not a valid tool name: use letters, "
+            "digits, underscore, or hyphen, up to 64 characters."
+        )
+
+    parameters = getattr(candidate, "parameters", None)
+    if not isinstance(parameters, dict) or parameters.get("type") != "object":
+        raise ValueError(
+            f'Tool {name!r} parameters must be a JSON Schema object with "type": '
+            '"object".'
+        )
 
 
 class _FunctionTool(Tool):
@@ -329,17 +387,11 @@ class _FunctionTool(Tool):
     def __init__(self, func: Callable[..., Any]) -> None:
         summary, _ = _parse_docstring(func)
 
-        name = func.__name__
-        if not _VALID_TOOL_NAME.match(name):
-            raise ValueError(
-                f"Tool name {name!r} is not a valid tool name: use letters, "
-                "digits, underscore, or hyphen, up to 64 characters."
-            )
-
         self._func = func
-        self.name = name
+        self.name = func.__name__
         self.description = summary
         self.parameters = _build_schema(func)
+        _check_tool(self)
 
     async def forward(self, **kwargs: Any) -> Any:
         # Async functions are awaited directly; a plain sync function runs in a
@@ -360,6 +412,7 @@ def tool(
     timeout: float | None = ...,
     parallel_safe: bool = ...,
     max_output_chars: int | None = ...,
+    validate_arguments: bool = ...,
 ) -> Callable[[Callable[..., Any]], Tool]: ...
 
 
@@ -369,6 +422,7 @@ def tool(
     timeout: float | None = None,
     parallel_safe: bool = True,
     max_output_chars: int | None = None,
+    validate_arguments: bool = True,
 ) -> Tool | Callable[[Callable[..., Any]], Tool]:
     """Create a Tool from a plain Python function.
 
@@ -399,6 +453,7 @@ def tool(
         built.timeout = timeout
         built.parallel_safe = parallel_safe
         built.max_output_chars = max_output_chars
+        built.validate_arguments = validate_arguments
         return built
 
     if func is not None:
