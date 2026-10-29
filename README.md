@@ -139,6 +139,7 @@ Offline (no API key):
 uv run python examples/cli_failure_recovery.py   # recover from tool errors
 uv run python examples/cli_memory_chat.py        # persist and continue a session
 uv run python examples/cli_advanced_observer.py  # watch every event type
+uv run python examples/cli_dynamic_tools.py      # add and remove tools on a live session
 ```
 
 Needs an API key:
@@ -162,6 +163,7 @@ What each one covers:
 | Skills (progressive disclosure) | `cli_repo_assistant.py`, [`skills/code-reviewer`](examples/skills/code-reviewer) |
 | Timeouts, redaction, `parallel_safe` | `cli_notes_agent.py` |
 | `max_tool_output_chars` | `cli_repo_assistant.py` |
+| Tools from a JSON Schema, `add_tools` / `remove_tools` | `cli_dynamic_tools.py` |
 | Custom scripted/fake model | `cli_failure_recovery.py`, `cli_memory_chat.py` |
 
 ## Usage

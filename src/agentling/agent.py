@@ -192,7 +192,7 @@ class AgentSession:
 
     A session owns its own Memory, interrupt token, and tool set (a copy of the
     Agent's base tools, so tools added here never leak into another session).
-    Create one with Agent.start().
+    Create one with Agent.start(). Change tools with add_tools()/remove_tools().
     """
 
     def __init__(self, agent: Agent) -> None:

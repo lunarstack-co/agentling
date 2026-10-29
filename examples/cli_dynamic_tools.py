@@ -4,8 +4,8 @@ Runs fully offline with a scripted model, so no API key is needed:
 
     uv run python examples/cli_dynamic_tools.py
 
-The session gains the tool mid-conversation, the model uses it, then the tool
-is removed and the model recovers from the unknown-tool observation.
+The tool is added to the session, the model uses it, then the tool is removed
+and the model recovers from the unknown-tool observation.
 """
 
 from __future__ import annotations

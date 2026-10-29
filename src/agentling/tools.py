@@ -446,6 +446,8 @@ def tool(
         @tool(timeout=30, max_output_chars=2000, parallel_safe=False)
         def run_query(sql: str) -> str:
             ...
+
+    Pass validate_arguments=False when something else checks the arguments.
     """
 
     def make(target: Callable[..., Any]) -> Tool:
