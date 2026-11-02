@@ -4,6 +4,68 @@ All notable changes to agentling are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims
 to follow [semantic versioning](https://semver.org/).
 
+## [0.2.0] - Unreleased
+
+agentling no longer ships a model adapter or depends on `openai`. Any object
+with a `stream(messages, tools)` method that yields `Delta`s is a model, so an
+app can use OpenAI, Anthropic, Gemini or a local server through an adapter of
+its own. `examples/providers/openai_chat.py` is one to copy.
+
+### Added
+
+- `ToolDefinition`, the provider-neutral description of a tool that adapters
+  render in their own format, and `Tool.definition` to get one.
+- `reasoning`, `finish_reason` and `provider_data` on `Delta` and
+  `ChatMessage`, and `cached_input_tokens` and `reasoning_tokens` on `Usage`.
+  `provider_data` must be JSON-serialisable; the loop raises
+  `ModelOutputError` when it isn't.
+- `FinishReason`, and `FinalEvent.finish_reason` for the last model turn.
+- `ModelError` subclasses for each kind of model failure
+  (`ModelConnectionError`, `ModelRateLimitError`, `ModelServerError`,
+  `ModelTimeoutError`, `ModelAuthError`, `ModelBadRequestError`,
+  `ModelContextLengthError`), with `retryable`, `retry_after` and `status`.
+- `RetryPolicy` and `Agent(retry=...)`. The loop retries a turn that fails
+  with a retryable error before its first chunk, with backoff and jitter,
+  honouring `retry_after` up to `max_delay`. `retry=None` turns retries off.
+- `deltas_from_message`, for adapters whose backend doesn't stream.
+- A reference adapter for OpenAI-compatible endpoints in
+  `examples/providers/openai_chat.py`. It needs `httpx`, which agentling
+  itself doesn't depend on.
+
+### Changed
+
+- `model_timeout` bounds the wait for each streamed chunk, not the whole turn.
+- A tool call that arrives without an id gets one
+  (`agentling_call_<index>_<8 hex>`) instead of failing the turn.
+- `ModelOutputError` is now a subclass of `ModelError`.
+- `FinalEvent.usage` is `None` when the model never reported usage, instead of
+  zero counts.
+- `interrupt()` also ends a wait between retries.
+- The answer forced at the step limit goes through `context_manager`, retries
+  and interrupts like any other turn.
+- `Agent()` raises `TypeError` straight away for a model without a usable
+  `stream` method.
+- Memory saves as format 2, which adds the new fields. Format 1 saves still
+  load, but 0.1.x can't read format 2.
+- The examples that need an API key run as
+  `uv run python -m examples.cli_math_tutor` (and likewise for the others).
+
+### Removed
+
+- `OpenAIModel` and the `openai` dependency. The only runtime dependency is
+  `pyyaml`.
+- `ToolSpec` and `Tool.to_schema()`; use `Tool.definition`.
+- `Model.generate`. `Model` has one method, `stream`, which takes
+  `ToolDefinition`s.
+
+### Fixed
+
+- A slow consumer of `run(stream=True)` no longer receives a `CancelledError`
+  caused by `model_timeout`.
+- Retries no longer stack. agentling used to retry on top of the OpenAI SDK's
+  own retries, up to nine attempts per request.
+- Interrupting a run mid-stream now closes the adapter's stream.
+
 ## [0.1.1] - 2026-10-29
 
 Tools whose schemas come from somewhere else (an MCP server, an OpenAPI spec, a
@@ -74,5 +136,6 @@ The first real release: the core framework plus a production-hardening pass.
   run off the event loop, optional error redaction (`redact_errors`), cumulative
   token usage on the final event, and a `context_manager` hook for long runs.
 
+[0.2.0]: https://github.com/lunarstack-co/agentling/compare/v0.1.1...HEAD
 [0.1.1]: https://github.com/lunarstack-co/agentling/releases/tag/v0.1.1
 [0.1.0]: https://github.com/lunarstack-co/agentling/releases/tag/v0.1.0
