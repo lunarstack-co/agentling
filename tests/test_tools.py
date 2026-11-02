@@ -2,6 +2,7 @@ from typing import Any, Literal, Optional
 
 import pytest
 
+from agentling.models import ToolDefinition
 from agentling.tools import FinalAnswerTool, Tool, ToolCallError, _check_tool, tool
 
 
@@ -19,15 +20,18 @@ def test_basic_types_required_and_descriptions() -> None:
         """
         return a + b
 
-    fn = add.to_schema()["function"]
-    props = fn["parameters"]["properties"]
+    definition = add.definition
+    props = definition.parameters["properties"]
 
-    assert fn["name"] == "add"
-    assert fn["description"] == "Add two integers."
+    assert isinstance(definition, ToolDefinition)
+    assert definition.name == "add"
+    assert definition.description == "Add two integers."
     assert props["a"]["type"] == "integer"
     assert props["a"]["description"] == "The first number."
     assert props["b"]["type"] == "integer"
-    assert fn["parameters"]["required"] == ["a"]  # b has a default
+    assert definition.parameters["required"] == ["a"]  # b has a default
+    assert definition.parameters["additionalProperties"] is False
+    assert not hasattr(add, "to_schema")
 
 
 def test_literal_becomes_enum() -> None:
@@ -35,7 +39,7 @@ def test_literal_becomes_enum() -> None:
     def pick(unit: Literal["c", "f"] = "c") -> str:
         return unit
 
-    prop = pick.to_schema()["function"]["parameters"]["properties"]["unit"]
+    prop = pick.definition.parameters["properties"]["unit"]
     assert prop["type"] == "string"
     assert prop["enum"] == ["c", "f"]
     assert prop["default"] == "c"  # defaults are now exposed in the schema
@@ -46,7 +50,7 @@ def test_optional_is_unwrapped() -> None:
     def f(x: Optional[int] = None, y: str | None = None) -> str:
         return "ok"
 
-    schema = f.to_schema()["function"]["parameters"]
+    schema = f.definition.parameters
     assert schema["properties"]["x"]["type"] == "integer"
     assert schema["properties"]["y"]["type"] == "string"
     assert schema["required"] == []
@@ -57,7 +61,7 @@ def test_list_and_dict() -> None:
     def f(tags: list[str], meta: dict) -> str:
         return "ok"
 
-    props = f.to_schema()["function"]["parameters"]["properties"]
+    props = f.definition.parameters["properties"]
     assert props["tags"]["type"] == "array"
     assert props["meta"]["type"] == "object"
 
@@ -67,7 +71,7 @@ def test_array_includes_items() -> None:
     def f(tags: list[str]) -> str:
         return ",".join(tags)
 
-    prop = f.to_schema()["function"]["parameters"]["properties"]["tags"]
+    prop = f.definition.parameters["properties"]["tags"]
     assert prop == {"type": "array", "items": {"type": "string"}}
 
 
@@ -76,7 +80,7 @@ def test_default_is_exposed() -> None:
     def f(limit: int = 5) -> int:
         return limit
 
-    prop = f.to_schema()["function"]["parameters"]["properties"]["limit"]
+    prop = f.definition.parameters["properties"]["limit"]
     assert prop["default"] == 5
 
 
@@ -85,7 +89,7 @@ def test_schema_forbids_additional_properties() -> None:
     def f(a: int) -> int:
         return a
 
-    assert f.to_schema()["function"]["parameters"]["additionalProperties"] is False
+    assert f.definition.parameters["additionalProperties"] is False
 
 
 def test_varargs_are_rejected() -> None:
@@ -166,7 +170,7 @@ async def test_non_dict_arguments_rejected(weather: Tool) -> None:
 # --------------------------------------------------------------------------- #
 async def test_final_answer_tool() -> None:
     final = FinalAnswerTool()
-    props = final.to_schema()["function"]["parameters"]["properties"]
+    props = final.definition.parameters["properties"]
 
     assert final.name == "final_answer"
     assert "answer" in props

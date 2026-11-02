@@ -24,6 +24,7 @@ from agentling import (
     Tool,
     ToolCall,
     ToolCallDelta,
+    ToolDefinition,
     Usage,
 )
 
@@ -60,15 +61,8 @@ class ScriptedModel:
         self._turns = list(turns)
         self._index = 0
 
-    async def generate(
-        self, messages: Sequence[ChatMessage], tools: Sequence[Any] | None = None
-    ) -> ChatMessage:
-        turn = self._turns[self._index]
-        self._index += 1
-        return turn
-
     async def stream(
-        self, messages: Sequence[ChatMessage], tools: Sequence[Any] | None = None
+        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition] = ()
     ) -> AsyncIterator[Delta]:
         turn = self._turns[self._index]
         self._index += 1

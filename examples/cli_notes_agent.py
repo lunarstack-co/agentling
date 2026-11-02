@@ -2,7 +2,7 @@
 
 Needs an OpenAI-compatible API key (set OPENAI_API_KEY):
 
-    uv run python examples/cli_notes_agent.py
+    uv run python -m examples.cli_notes_agent
 
 Shows file tools limited to a notes directory, an async tool (search), a tool
 that writes and so isn't parallel_safe (add), and the tool_timeout and
@@ -16,7 +16,8 @@ import asyncio
 import os
 from pathlib import Path
 
-from agentling import Agent, Model, OpenAIModel, ToolCallError, tool
+from agentling import Agent, Model, ToolCallError, tool
+from examples.providers.openai_chat import OpenAIChatModel
 
 
 def _resolve_within(base: Path, candidate: str) -> Path:
@@ -68,7 +69,7 @@ def build_agent(model: Model | None = None, notes_dir: str = "notes") -> Agent:
 
     return Agent(
         model=model
-        or OpenAIModel(os.environ.get("AGENTLING_EXAMPLE_MODEL", "gpt-4o-mini")),
+        or OpenAIChatModel(os.environ.get("AGENTLING_EXAMPLE_MODEL", "gpt-4o-mini")),
         tools=[add_note, search_notes, list_notes],
         tool_timeout=10.0,
         redact_errors=True,

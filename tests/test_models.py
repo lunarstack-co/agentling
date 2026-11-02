@@ -1,147 +1,109 @@
-from collections.abc import AsyncIterator
-from types import SimpleNamespace
-from typing import Any, cast
+import dataclasses
+import re
+import typing
+from pathlib import Path
 
-import openai
 import pytest
 
 from agentling.errors import ModelOutputError
 from agentling.models import (
     ChatMessage,
     Delta,
-    OpenAIModel,
+    FinishReason,
+    Model,
     ToolCall,
     ToolCallDelta,
+    ToolDefinition,
     Usage,
     agglomerate_deltas,
+    deltas_from_message,
+    parse_tool_arguments,
 )
 
-
-# --------------------------------------------------------------------------- #
-# Helpers: a fake OpenAI client, so no network calls happen
-# --------------------------------------------------------------------------- #
-def _make_model(create: Any) -> OpenAIModel:
-    """Build an OpenAIModel whose client.chat.completions.create is `create`."""
-
-    model = OpenAIModel("test-model", api_key="test", retry_base_delay=0)
-    model.client = cast(
-        Any,
-        SimpleNamespace(
-            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-        ),
-    )
-    return model
-
-
-def _rate_limit_error() -> openai.RateLimitError:
-    """A RateLimitError instance, built without invoking its constructor."""
-
-    return openai.RateLimitError.__new__(openai.RateLimitError)
-
-
-@pytest.fixture
-def model() -> OpenAIModel:
-    return OpenAIModel("test-model", api_key="test")
+_SYNTHESISED_ID = re.compile(r"^agentling_call_(\d+)_[0-9a-f]{8}$")
 
 
 # --------------------------------------------------------------------------- #
-# Usage
+# Neutral types
 # --------------------------------------------------------------------------- #
 def test_usage_total_tokens() -> None:
     assert Usage(input_tokens=3, output_tokens=4).total_tokens == 7
 
 
-# --------------------------------------------------------------------------- #
-# Outbound conversion: ChatMessage -> OpenAI dicts
-# --------------------------------------------------------------------------- #
-def test_to_openai_messages_system_and_user(model: OpenAIModel) -> None:
-    out = model._to_openai_messages(
-        [
-            ChatMessage(role="system", content="sys"),
-            ChatMessage(role="user", content="hi"),
-        ]
+def test_usage_adds_every_field() -> None:
+    assert Usage(1, 2, 3, 4) + Usage(10, 20, 30, 40) == Usage(11, 22, 33, 44)
+    assert Usage(5, 7).total_tokens == 12
+
+
+def test_usage_breakdowns_default_to_zero() -> None:
+    usage = Usage(1, 2)
+    assert usage.cached_input_tokens == 0
+    assert usage.reasoning_tokens == 0
+
+
+def test_tool_definition_is_frozen() -> None:
+    definition = ToolDefinition("a", "d", {"type": "object"})
+
+    assert (definition.name, definition.description) == ("a", "d")
+    assert definition.parameters == {"type": "object"}
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        definition.name = "b"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("value", [Delta(), ChatMessage(role="assistant")])
+def test_new_fields_default_to_none(value: Delta | ChatMessage) -> None:
+    assert value.reasoning is None
+    assert value.finish_reason is None
+    assert value.provider_data is None
+
+
+def test_finish_reason_values() -> None:
+    assert typing.get_args(FinishReason) == (
+        "stop",
+        "tool_calls",
+        "length",
+        "content_filter",
+        "error",
+        "unknown",
     )
-    assert out == [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "hi"},
-    ]
 
 
-def test_to_openai_messages_assistant_with_tool_calls(model: OpenAIModel) -> None:
-    msg = ChatMessage(
-        role="assistant",
-        content="",
-        tool_calls=[ToolCall(id="c1", name="f", arguments={"a": 1})],
-    )
-    out = model._to_openai_messages([msg])
-    assert out == [
-        {
-            "role": "assistant",
-            "content": None,  # empty string is coerced to null on the way out
-            "tool_calls": [
-                {
-                    "id": "c1",
-                    "type": "function",
-                    "function": {"name": "f", "arguments": '{"a": 1}'},
-                }
-            ],
-        }
-    ]
-
-
-def test_to_openai_messages_tool_result(model: OpenAIModel) -> None:
-    out = model._to_openai_messages(
-        [ChatMessage(role="tool", content="result", tool_call_id="c1")]
-    )
-    assert out == [{"role": "tool", "content": "result", "tool_call_id": "c1"}]
-
-
-def test_tool_message_without_id_raises(model: OpenAIModel) -> None:
-    with pytest.raises(ValueError, match="tool_call_id"):
-        model._to_openai_messages([ChatMessage(role="tool", content="r")])
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "Yield no `Delta` until",
+        "`usage` at least once",
+        "`finish_reason` exactly once",
+        "only `ModelError`",
+        "Never mutate",
+        "system message",
+        "`provider_data` namespace",
+    ],
+)
+def test_model_docstring_states_the_adapter_contract(rule: str) -> None:
+    assert Model.__doc__ is not None
+    assert rule in " ".join(Model.__doc__.split())
 
 
 # --------------------------------------------------------------------------- #
-# Inbound conversion helpers
+# parse_tool_arguments
 # --------------------------------------------------------------------------- #
-def test_from_openai_usage_none(model: OpenAIModel) -> None:
-    assert model._from_openai_usage(None) == Usage(0, 0)
+def test_parse_tool_arguments_valid() -> None:
+    assert parse_tool_arguments('{"a": 1}') == {"a": 1}
 
 
-def test_from_openai_usage_maps_fields(model: OpenAIModel) -> None:
-    usage = SimpleNamespace(prompt_tokens=7, completion_tokens=3)
-    assert model._from_openai_usage(usage) == Usage(7, 3)
+def test_parse_tool_arguments_empty_defaults_to_object() -> None:
+    assert parse_tool_arguments("") == {}
 
 
-def test_from_openai_tool_calls_none(model: OpenAIModel) -> None:
-    assert model._from_openai_tool_calls(None) == []
-
-
-def test_from_openai_tool_calls_maps(model: OpenAIModel) -> None:
-    tc = SimpleNamespace(
-        id="c1", function=SimpleNamespace(name="f", arguments='{"a": 1}')
-    )
-    assert model._from_openai_tool_calls([tc]) == [
-        ToolCall(id="c1", name="f", arguments={"a": 1})
-    ]
-
-
-def test_parse_tool_arguments_valid(model: OpenAIModel) -> None:
-    assert model._parse_tool_arguments('{"x": 1}') == {"x": 1}
-
-
-def test_parse_tool_arguments_empty_defaults_to_object(model: OpenAIModel) -> None:
-    assert model._parse_tool_arguments("") == {}
-
-
-def test_parse_tool_arguments_invalid_json_raises(model: OpenAIModel) -> None:
+def test_parse_tool_arguments_invalid_json_raises() -> None:
     with pytest.raises(ModelOutputError, match="Invalid tool call arguments"):
-        model._parse_tool_arguments("{not json}")
+        parse_tool_arguments("{bad")
 
 
-def test_parse_tool_arguments_non_object_raises(model: OpenAIModel) -> None:
+def test_parse_tool_arguments_non_object_raises() -> None:
     with pytest.raises(ModelOutputError, match="must be a JSON object"):
-        model._parse_tool_arguments("[1, 2]")
+        parse_tool_arguments("[1, 2]")
 
 
 # --------------------------------------------------------------------------- #
@@ -204,164 +166,114 @@ def test_agglomerate_rejects_tool_call_without_name() -> None:
         agglomerate_deltas(deltas)
 
 
-def test_agglomerate_rejects_tool_call_without_id() -> None:
-    deltas = [Delta(tool_calls=[ToolCallDelta(index=0, name="f", arguments="{}")])]
-    with pytest.raises(ModelOutputError, match="missing an id"):
-        agglomerate_deltas(deltas)
+def test_agglomerate_synthesises_a_missing_id() -> None:
+    msg = agglomerate_deltas([Delta(tool_calls=[ToolCallDelta(0, None, "f", "{}")])])
+
+    assert len(msg.tool_calls) == 1
+    match = _SYNTHESISED_ID.match(msg.tool_calls[0].id)
+    assert match is not None
+    assert match.group(1) == "0"
 
 
-# --------------------------------------------------------------------------- #
-# generate (fake client)
-# --------------------------------------------------------------------------- #
-async def test_generate_returns_message_with_usage() -> None:
-    async def fake_create(**kwargs: Any) -> Any:
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content="hello", tool_calls=None)
-                )
-            ],
-            usage=SimpleNamespace(prompt_tokens=5, completion_tokens=2),
-        )
-
-    model = _make_model(fake_create)
-    msg = await model.generate([ChatMessage(role="user", content="hi")])
-
-    assert msg.role == "assistant"
-    assert msg.content == "hello"
-    assert msg.usage == Usage(5, 2)
-
-
-async def test_generate_parses_tool_calls_and_coerces_content() -> None:
-    async def fake_create(**kwargs: Any) -> Any:
-        tc = SimpleNamespace(
-            id="call_1",
-            function=SimpleNamespace(name="get_weather", arguments='{"city": "Paris"}'),
-        )
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(message=SimpleNamespace(content=None, tool_calls=[tc]))
-            ],
-            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
-        )
-
-    model = _make_model(fake_create)
-    msg = await model.generate([ChatMessage(role="user", content="weather?")])
-
-    assert msg.content == ""  # None coerced to ""
-    assert msg.tool_calls == [
-        ToolCall(id="call_1", name="get_weather", arguments={"city": "Paris"})
-    ]
-
-
-# --------------------------------------------------------------------------- #
-# stream (fake client)
-# --------------------------------------------------------------------------- #
-async def test_stream_yields_deltas_then_agglomerates() -> None:
-    chunks = [
-        SimpleNamespace(
-            choices=[
-                SimpleNamespace(delta=SimpleNamespace(content="Hel", tool_calls=None))
-            ],
-            usage=None,
-        ),
-        SimpleNamespace(
-            choices=[
-                SimpleNamespace(delta=SimpleNamespace(content="lo", tool_calls=None))
-            ],
-            usage=None,
-        ),
-        SimpleNamespace(  # final usage-only chunk
-            choices=[],
-            usage=SimpleNamespace(prompt_tokens=3, completion_tokens=1),
-        ),
-    ]
-
-    async def fake_create(**kwargs: Any) -> Any:
-        async def gen() -> AsyncIterator[Any]:
-            for chunk in chunks:
-                yield chunk
-
-        return gen()
-
-    model = _make_model(fake_create)
-    deltas = [d async for d in model.stream([ChatMessage(role="user", content="hi")])]
-    final = agglomerate_deltas(deltas)
-
-    assert final.content == "Hello"
-    assert final.usage == Usage(3, 1)
-
-
-# --------------------------------------------------------------------------- #
-# retry policy
-# --------------------------------------------------------------------------- #
-async def test_retry_then_succeeds() -> None:
-    calls = 0
-    result = SimpleNamespace(
-        choices=[
-            SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))
-        ],
-        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+def test_agglomerate_synthesises_distinct_ids_for_empty_ids() -> None:
+    msg = agglomerate_deltas(
+        [
+            Delta(tool_calls=[ToolCallDelta(0, "", "f", "{}")]),
+            Delta(tool_calls=[ToolCallDelta(1, "", "g", "{}")]),
+        ]
     )
 
-    async def flaky_create(**kwargs: Any) -> Any:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise _rate_limit_error()
-        return result
-
-    model = _make_model(flaky_create)
-    msg = await model.generate([ChatMessage(role="user", content="hi")])
-
-    assert msg.content == "ok"
-    assert calls == 2  # failed once, retried, then succeeded
+    first, second = (call.id for call in msg.tool_calls)
+    assert first != second
+    assert first.startswith("agentling_call_0_")
+    assert second.startswith("agentling_call_1_")
+    assert all(_SYNTHESISED_ID.match(call.id) for call in msg.tool_calls)
 
 
-async def test_retry_gives_up_after_max_retries() -> None:
-    async def always_fails(**kwargs: Any) -> Any:
-        raise _rate_limit_error()
-
-    model = _make_model(always_fails)
-    model.max_retries = 1  # 2 attempts total
-
-    with pytest.raises(openai.RateLimitError):
-        await model.generate([ChatMessage(role="user", content="hi")])
-
-
-async def test_retry_on_transient_api_error() -> None:
-    calls = 0
-    result = SimpleNamespace(
-        choices=[
-            SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))
-        ],
-        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+def test_agglomerate_gives_one_id_per_index_across_fragments() -> None:
+    msg = agglomerate_deltas(
+        [
+            Delta(tool_calls=[ToolCallDelta(0, name="f", arguments='{"a')]),
+            Delta(tool_calls=[ToolCallDelta(0, arguments='":')]),
+            Delta(tool_calls=[ToolCallDelta(0, arguments="1}")]),
+        ]
     )
 
-    async def flaky(**kwargs: Any) -> Any:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise openai.APIConnectionError.__new__(openai.APIConnectionError)
-        return result
-
-    model = _make_model(flaky)
-    msg = await model.generate([ChatMessage(role="user", content="hi")])
-
-    assert msg.content == "ok"
-    assert calls == 2  # transient error retried, then succeeded
+    assert len(msg.tool_calls) == 1
+    assert msg.tool_calls[0].arguments == {"a": 1}
+    assert _SYNTHESISED_ID.match(msg.tool_calls[0].id)
 
 
-async def test_permanent_error_is_not_retried() -> None:
-    calls = 0
+def test_agglomerate_keeps_a_real_id() -> None:
+    msg = agglomerate_deltas(
+        [Delta(tool_calls=[ToolCallDelta(0, "call_x", "f", "{}")])]
+    )
+    assert msg.tool_calls[0].id == "call_x"
 
-    async def always_bad(**kwargs: Any) -> Any:
-        nonlocal calls
-        calls += 1
-        raise openai.BadRequestError.__new__(openai.BadRequestError)
 
-    model = _make_model(always_bad)
+def test_agglomerate_keeps_a_real_id_and_name_over_later_empty_ones() -> None:
+    msg = agglomerate_deltas(
+        [
+            Delta(tool_calls=[ToolCallDelta(0, "call_real", "f", '{"a')]),
+            Delta(tool_calls=[ToolCallDelta(0, "", "", '": 1}')]),
+        ]
+    )
+    assert msg.tool_calls == [ToolCall(id="call_real", name="f", arguments={"a": 1})]
 
-    with pytest.raises(openai.BadRequestError):
-        await model.generate([ChatMessage(role="user", content="hi")])
-    assert calls == 1  # a permanent error fails at once, with no retry
+
+def test_agglomerate_concatenates_reasoning() -> None:
+    msg = agglomerate_deltas([Delta(reasoning="a"), Delta(reasoning="b")])
+    assert msg.reasoning == "ab"
+
+
+def test_agglomerate_leaves_reasoning_none_when_absent() -> None:
+    assert agglomerate_deltas([Delta(content="x")]).reasoning is None
+
+
+def test_agglomerate_last_finish_reason_wins() -> None:
+    msg = agglomerate_deltas(
+        [Delta(), Delta(finish_reason="length"), Delta(finish_reason=None)]
+    )
+    assert msg.finish_reason == "length"
+
+
+def test_agglomerate_provider_data_last_wins_unmerged() -> None:
+    msg = agglomerate_deltas(
+        [
+            Delta(provider_data={"a": 1}),
+            Delta(provider_data={"b": 2}),
+            Delta(provider_data=None),
+        ]
+    )
+    assert msg.provider_data == {"b": 2}
+
+
+# --------------------------------------------------------------------------- #
+# deltas_from_message
+# --------------------------------------------------------------------------- #
+async def test_deltas_from_message_round_trips() -> None:
+    message = ChatMessage(
+        role="assistant",
+        content="thinking done",
+        tool_calls=[
+            ToolCall(id="c1", name="f", arguments={"x": 1}),
+            ToolCall(id="c2", name="g", arguments={}),
+        ],
+        usage=Usage(3, 4),
+        reasoning="because",
+        finish_reason="tool_calls",
+        provider_data={"vendor": {"sig": "s"}},
+    )
+
+    deltas = [delta async for delta in deltas_from_message(message)]
+
+    assert len(deltas) == 1
+    assert agglomerate_deltas(deltas) == message
+
+
+# --------------------------------------------------------------------------- #
+# Non-functional budgets
+# --------------------------------------------------------------------------- #
+def test_models_module_stays_small() -> None:
+    source = Path(__file__).resolve().parents[1] / "src" / "agentling" / "models.py"
+    assert len(source.read_text(encoding="utf-8").splitlines()) <= 250

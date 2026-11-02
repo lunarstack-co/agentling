@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Sequence
-from typing import Any
 
 from agentling import (
     Agent,
@@ -23,6 +22,7 @@ from agentling import (
     FinalEvent,
     Memory,
     ToolCallDelta,
+    ToolDefinition,
     Usage,
 )
 
@@ -34,15 +34,8 @@ class ScriptedModel:
         self._turns = list(turns)
         self._index = 0
 
-    async def generate(
-        self, messages: Sequence[ChatMessage], tools: Sequence[Any] | None = None
-    ) -> ChatMessage:
-        turn = self._turns[self._index]
-        self._index += 1
-        return turn
-
     async def stream(
-        self, messages: Sequence[ChatMessage], tools: Sequence[Any] | None = None
+        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition] = ()
     ) -> AsyncIterator[Delta]:
         turn = self._turns[self._index]
         self._index += 1

@@ -14,10 +14,9 @@ from collections.abc import Callable
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints, overload
 
 from .errors import AgentlingError
-from .models import ToolSpec
+from .models import ToolDefinition
 
-# JSON Schema for a tool's parameters object. This is intentionally separate
-# from ToolSpec, which represents the full function tool wrapper.
+# JSON Schema for a tool's parameters object.
 JsonSchema = dict[str, Any]
 
 
@@ -56,17 +55,11 @@ class Tool:
 
         raise NotImplementedError
 
-    def to_schema(self) -> ToolSpec:
-        """Return the provider-facing schema for this tool."""
+    @property
+    def definition(self) -> ToolDefinition:
+        """What the model is told about this tool. Adapters render it."""
 
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
+        return ToolDefinition(self.name, self.description, self.parameters)
 
     async def call(self, arguments: dict[str, Any]) -> Any:
         """Validate the arguments, then run the tool. The agent loop calls this."""
