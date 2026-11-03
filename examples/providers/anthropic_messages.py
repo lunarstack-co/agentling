@@ -1,12 +1,11 @@
 """A model adapter for Anthropic's Messages API.
 
-Streams text, thinking and tool calls over httpx, reports usage and finish
-reasons, and turns HTTP failures into agentling's ModelError classes. The
-agent loop does the retrying, so this adapter never retries.
+Streams text, thinking and tool calls over httpx and maps HTTP failures to
+Agentling's ModelError classes. It never retries; the agent loop does.
 
-Thinking blocks are kept in provider_data["anthropic"]["blocks"] and sent
-back, in order and unchanged, with the assistant turn they came from. The API
-rejects a tool-use turn whose thinking blocks were dropped or edited.
+Thinking blocks are kept in provider_data["anthropic"]["blocks"] and sent back
+unchanged, in order, with the assistant turn they came from. The API rejects a
+tool-use turn whose thinking blocks were dropped or edited.
 
     model = AnthropicMessagesModel("claude-sonnet-5")  # reads ANTHROPIC_API_KEY
     agent = Agent(model=model, tools=[...])
@@ -106,8 +105,8 @@ class AnthropicMessagesModel:
         }
         decoder = _TurnDecoder()
         try:
-            # One client per turn keeps the example short. Hold a long-lived
-            # client on the instance if you need connection reuse.
+            # A client per turn keeps the example short. Keep one on the
+            # instance if you need connection reuse.
             async with httpx.AsyncClient(
                 transport=self.transport, timeout=self.timeout
             ) as client:
@@ -218,9 +217,8 @@ class _TurnDecoder:
     """Turns one turn's server-sent events into Deltas.
 
     Text, thinking and tool-call fragments are yielded as they arrive. Usage,
-    the finish reason and the thinking blocks are held back for one final
-    Delta, because the API reports cumulative counts and the blocks are only
-    complete at the end.
+    the finish reason and the thinking blocks wait for one final Delta: the API
+    reports cumulative counts, and the blocks are only complete at the end.
     """
 
     def __init__(self) -> None:
@@ -332,8 +330,8 @@ class _TurnDecoder:
         if not self._usage:
             return None
         cache_read = self._usage.get("cache_read_input_tokens", 0)
-        # agentling's input total includes cached tokens; Anthropic counts
-        # cache reads and writes separately from input_tokens.
+        # Anthropic counts cache reads and writes apart from input_tokens;
+        # Agentling's input total includes them.
         return Usage(
             input_tokens=self._usage.get("input_tokens", 0)
             + cache_read
@@ -383,8 +381,8 @@ def _stream_error(error: object) -> ModelError:
 def _error_text(response: httpx.Response) -> str:
     """The API's own error message, or a short excerpt of the body.
 
-    Only the message field is kept, since bodies can echo parts of the
-    request and exception messages end up in logs.
+    Only the message field is kept: bodies can echo parts of the request, and
+    exception messages end up in logs.
     """
 
     try:

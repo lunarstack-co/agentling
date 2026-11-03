@@ -1,12 +1,10 @@
-"""Event-observer demo: watch every event type flow from a single run.
+"""Prints every event a streamed run produces, and counts each type.
 
-Runs fully offline with a scripted model, so no API key is needed:
+Runs offline with a scripted model:
 
-    uv run python examples/cli_advanced_observer.py
+    uv run python -m examples.cli_advanced_observer
 
-Iterates the event stream directly and prints each TextDelta, tool call, tool
-result, step and the final event. It also sets a context_manager that trims the
-prompt, and a model_timeout.
+Also sets a context_manager that trims the prompt, and a model_timeout.
 """
 
 from __future__ import annotations

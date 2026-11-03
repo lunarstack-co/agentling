@@ -1,10 +1,9 @@
 """A model adapter for OpenAI-compatible chat-completions endpoints.
 
 Works with OpenAI and with servers that copy its API (LM Studio, vLLM, Ollama's
-/v1, OpenRouter and others): point `base_url` at them. It streams text and tool
-calls over httpx, reports usage and finish reasons, and turns HTTP failures
-into agentling's ModelError classes. The agent loop does the retrying, so this
-adapter never retries.
+/v1, OpenRouter and others): point `base_url` at them. Streams text and tool
+calls over httpx and maps HTTP failures to Agentling's ModelError classes. It
+never retries; the agent loop does.
 
     model = OpenAIChatModel("gpt-4o-mini")  # reads OPENAI_API_KEY
     agent = Agent(model=model, tools=[...])
@@ -93,8 +92,8 @@ class OpenAIChatModel:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         decoder = _TurnDecoder()
         try:
-            # One client per turn keeps the example short. Hold a long-lived
-            # client on the instance if you need connection reuse.
+            # A client per turn keeps the example short. Keep one on the
+            # instance if you need connection reuse.
             async with httpx.AsyncClient(
                 transport=self.transport, timeout=self.timeout
             ) as client:
@@ -130,7 +129,7 @@ class OpenAIChatModel:
                 f"Could not reach {self.base_url}: {exc}"
             ) from exc
         except httpx.HTTPError as exc:
-            # The rest of httpx's errors, such as a body that fails to decode.
+            # Any other httpx error, such as a body that fails to decode.
             raise ModelServerError(f"Bad response from {self.base_url}: {exc}") from exc
 
 
@@ -220,16 +219,16 @@ class _TurnDecoder:
                 f"Unexpected stream chunk: {data[:200]!r}", retryable=False
             )
         if chunk.get("error"):
-            # OpenAI and OpenRouter report a failure that happens after the
-            # 200 status as a chunk carrying an error.
+            # OpenAI and OpenRouter report a failure after the 200 status as a
+            # chunk with an `error` field.
             raise _stream_error(chunk["error"])
         return self._delta(chunk)
 
     def _delta(self, chunk: dict[str, Any]) -> Delta | None:
         """Convert a parsed chunk, dropping ones that carry nothing.
 
-        The first chunk usually holds only the role. The loop treats any Delta
-        as output and stops retrying, so an empty one must not be yielded.
+        The first chunk usually holds only the role. The loop stops retrying
+        once any Delta arrives, so an empty one must not be yielded.
         """
 
         choices = chunk.get("choices") or []
@@ -378,10 +377,7 @@ def _error_text(response: httpx.Response) -> str:
 
 
 def _retry_after(response: httpx.Response) -> float | None:
-    """Read Retry-After in seconds, never below zero.
-
-    The HTTP-date form is ignored.
-    """
+    """Read Retry-After in seconds, never below zero. HTTP dates are ignored."""
 
     try:
         return max(0.0, float(response.headers["retry-after"]))

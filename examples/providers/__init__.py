@@ -1,5 +1,5 @@
-"""Reference model adapters for agentling.
+"""Reference model adapters for Agentling.
 
-agentling ships no adapters. Copy the one closest to your backend into your
-app and change it as you need.
+Agentling ships no adapters. Copy the one closest to your backend into your
+app and edit it there.
 """

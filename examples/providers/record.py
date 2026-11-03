@@ -1,8 +1,8 @@
 """Record a reference adapter against a live backend and save a fixture.
 
-Runs check_model's two-turn script (a text turn, then a tool turn) through a
-RecordingTransport, writes every exchange to --out with keys redacted, and
-prints the conformance report. Exits 1 if any rule failed.
+Runs check_model's text turn and tool turn through a RecordingTransport,
+writes the exchanges to --out with API key headers redacted, and prints the
+conformance report. Exits 1 if any rule failed.
 
     uv run python -m examples.providers.record ollama_native \\
         --base-url http://localhost:11434 --model qwen3:8b \\
@@ -12,8 +12,8 @@ prints the conformance report. Exits 1 if any rule failed.
         --model claude-sonnet-5 --api-key-env ANTHROPIC_API_KEY \\
         --out examples/providers/fixtures/anthropic_messages.jsonl
 
-The fixture holds the two successful turns. To make check_model test an
-error too, append a third exchange by hand (see fixtures/README.md).
+The fixture holds the two successful turns. To have check_model test an
+error as well, append a third exchange by hand (see fixtures/README.md).
 """
 
 from __future__ import annotations
