@@ -1,6 +1,5 @@
 import asyncio
 import io
-import json
 import re
 import threading
 from collections.abc import AsyncIterator, Sequence
@@ -32,45 +31,8 @@ from agentling.models import (
     Usage,
 )
 from agentling.skills import Skill
+from agentling.testing import ScriptedModel
 from agentling.tools import Tool, ToolCallError, tool
-
-
-class FakeModel:
-    """A scripted model: returns pre-set ChatMessages in order, no network.
-
-    Records the messages and tool schemas it was called with so tests can
-    assert on the loop.
-    """
-
-    def __init__(self, responses: Sequence[ChatMessage]) -> None:
-        self._responses = list(responses)
-        self._index = 0
-        self.calls: list[list[ChatMessage]] = []
-        self.tool_definitions: list[list[ToolDefinition]] = []
-
-    async def stream(
-        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition] = ()
-    ) -> AsyncIterator[Delta]:
-        # Replay the next scripted response as a delta stream that
-        # agglomerate_deltas rebuilds into the same ChatMessage.
-        self.calls.append(list(messages))
-        self.tool_definitions.append(list(tools))
-        response = self._responses[self._index]
-        self._index += 1
-        if response.content:
-            yield Delta(content=response.content)
-        for index, tc in enumerate(response.tool_calls):
-            yield Delta(
-                tool_calls=[
-                    ToolCallDelta(
-                        index=index,
-                        id=tc.id,
-                        name=tc.name,
-                        arguments=json.dumps(tc.arguments),
-                    )
-                ]
-            )
-        yield Delta(usage=response.usage)
 
 
 def _assistant(
@@ -138,7 +100,7 @@ _CALC_SKILL = Skill(
 # Termination paths
 # --------------------------------------------------------------------------- #
 async def test_forgiving_termination_returns_content() -> None:
-    model = FakeModel([_assistant(content="42")])
+    model = ScriptedModel([_assistant(content="42")])
     agent = Agent(model=model)
     session = agent.start()
 
@@ -150,7 +112,7 @@ async def test_forgiving_termination_returns_content() -> None:
 
 
 async def test_explicit_final_answer() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _assistant(
                 tool_calls=[
@@ -168,7 +130,7 @@ async def test_explicit_final_answer() -> None:
 # Tool execution
 # --------------------------------------------------------------------------- #
 async def test_tool_call_then_answer() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _assistant(
                 tool_calls=[ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})]
@@ -189,7 +151,7 @@ async def test_tool_call_then_answer() -> None:
 
 
 async def test_multi_step_tool_task() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _assistant(
                 tool_calls=[ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})]
@@ -216,7 +178,7 @@ async def test_tool_error_becomes_observation() -> None:
         """Always fails."""
         raise RuntimeError("kaboom")
 
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _assistant(tool_calls=[ToolCall(id="c1", name="boom", arguments={})]),
             _assistant(content="recovered"),
@@ -235,7 +197,7 @@ async def test_tool_error_becomes_observation() -> None:
 # Streaming
 # --------------------------------------------------------------------------- #
 async def test_streaming_yields_events() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _assistant(
                 tool_calls=[ToolCall(id="c1", name="add", arguments={"a": 1, "b": 1})]
@@ -255,7 +217,7 @@ async def test_streaming_yields_events() -> None:
 
 
 async def test_streaming_emits_text_deltas() -> None:
-    model = FakeModel([_assistant(content="hello world")])
+    model = ScriptedModel([_assistant(content="hello world")])
     agent = Agent(model=model)
 
     texts = [
@@ -278,7 +240,7 @@ async def test_max_steps_forces_a_final_answer() -> None:
         for i in range(2)
     ]
     forced = _assistant(content="forced final")
-    model = FakeModel([*looping, forced])
+    model = ScriptedModel([*looping, forced])
     agent = Agent(model=model, tools=[add], max_steps=2)
 
     assert await agent.run("loop forever") == "forced final"
@@ -297,7 +259,7 @@ _REPEAT_MARKER = "already made this exact tool call"
 
 
 async def test_loop_detector_nudges_on_repeat() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _tool_turn("c1", "add", a=2, b=3),
             _tool_turn("c2", "add", a=2, b=3),  # identical (name, args)
@@ -316,7 +278,7 @@ async def test_loop_detector_nudges_on_repeat() -> None:
 
 
 async def test_loop_detector_ignores_different_args() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _tool_turn("c1", "add", a=2, b=3),
             _tool_turn("c2", "add", a=4, b=5),  # different args -> not a loop
@@ -336,7 +298,7 @@ async def test_loop_detector_ignores_different_args() -> None:
 # Self-heal: unknown tool and always-raising tool
 # --------------------------------------------------------------------------- #
 async def test_unknown_tool_recovers() -> None:
-    model = FakeModel([_tool_turn("c1", "ghost"), _assistant(content="recovered")])
+    model = ScriptedModel([_tool_turn("c1", "ghost"), _assistant(content="recovered")])
     agent = Agent(model=model)  # only final_answer is registered
     session = agent.start()
     answer = await session.run("call a missing tool")
@@ -354,7 +316,7 @@ async def test_always_raising_tool_recovers() -> None:
         """Always raises."""
         raise RuntimeError("nope")
 
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _tool_turn("c1", "boom"),
             _tool_turn("c2", "final_answer", answer="handled"),
@@ -397,7 +359,7 @@ def _task_steps(session: AgentSession) -> int:
 
 
 async def test_interrupt_stops_run_gracefully() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "add", a=1, b=1), _assistant(content="unreached")]
     )
     session = Agent(model=model, tools=[add]).start()
@@ -409,7 +371,7 @@ async def test_interrupt_stops_run_gracefully() -> None:
 
 
 async def test_interrupt_while_idle_has_no_effect() -> None:
-    model = FakeModel([_assistant(content="ok")])
+    model = ScriptedModel([_assistant(content="ok")])
     session = Agent(model=model).start()
 
     session.interrupt()
@@ -420,7 +382,7 @@ async def test_interrupt_while_idle_has_no_effect() -> None:
 
 
 async def test_interrupt_after_a_finished_run_is_dropped() -> None:
-    model = FakeModel([_assistant(content="a"), _assistant(content="b")])
+    model = ScriptedModel([_assistant(content="a"), _assistant(content="b")])
     session = Agent(model=model).start()
     await session.run("first")
 
@@ -443,7 +405,7 @@ def test_the_interrupt_is_cleared_in_one_place() -> None:
 
 
 async def test_interrupt_then_resume_completes() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _tool_turn("c1", "add", a=1, b=1),
             _assistant(content="finished on resume"),
@@ -467,7 +429,7 @@ async def test_interrupt_then_resume_completes() -> None:
 
 
 async def test_run_with_reset_false_still_adds_the_task() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "add", a=1, b=1), _assistant(content="finished")]
     )
     session = Agent(model=model, tools=[add]).start()
@@ -479,7 +441,7 @@ async def test_run_with_reset_false_still_adds_the_task() -> None:
 
 
 async def test_resume_can_stream() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "add", a=1, b=1), _assistant(content="finished")]
     )
     session = Agent(model=model, tools=[add]).start()
@@ -495,7 +457,7 @@ async def test_resume_can_stream() -> None:
 
 
 async def test_resume_max_steps_counts_from_zero() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _tool_turn("c1", "add", a=1, b=1),
             _tool_turn("c2", "add", a=2, b=2),
@@ -514,7 +476,7 @@ async def test_resume_max_steps_counts_from_zero() -> None:
 
 
 def test_resume_on_a_fresh_session_raises() -> None:
-    session = Agent(model=FakeModel([])).start()
+    session = Agent(model=ScriptedModel([])).start()
 
     # Raised by the call itself, before any coroutine or stream exists.
     with pytest.raises(ValueError, match="^Nothing to resume$"):
@@ -524,7 +486,7 @@ def test_resume_on_a_fresh_session_raises() -> None:
 
 
 async def test_resume_after_a_finished_run_raises() -> None:
-    session = Agent(model=FakeModel([_assistant(content="done")])).start()
+    session = Agent(model=ScriptedModel([_assistant(content="done")])).start()
     await session.run("q")
 
     with pytest.raises(ValueError, match="^Nothing to resume$"):
@@ -538,7 +500,7 @@ _ALREADY_RUNNING = r"^Session is already running\. .*contextlib\.aclosing\.$"
 
 
 async def test_is_running_tracks_the_run() -> None:
-    model = FakeModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="ok")])
+    model = ScriptedModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="ok")])
     session = Agent(model=model, tools=[add]).start()
     seen: list[bool] = []
     session.step_callbacks.append(lambda step: seen.append(session.is_running))
@@ -551,7 +513,7 @@ async def test_is_running_tracks_the_run() -> None:
 
 
 async def test_is_running_resets_when_a_stream_is_closed_early() -> None:
-    model = FakeModel([_assistant(content="a"), _assistant(content="b")])
+    model = ScriptedModel([_assistant(content="a"), _assistant(content="b")])
     session = Agent(model=model).start()
 
     async with aclosing(session.run("first", stream=True)) as events:
@@ -567,7 +529,7 @@ async def test_is_running_resets_when_a_stream_is_closed_early() -> None:
 
 
 async def test_an_unstarted_stream_does_not_hold_the_session() -> None:
-    session = Agent(model=FakeModel([_assistant(content="b")])).start()
+    session = Agent(model=ScriptedModel([_assistant(content="b")])).start()
 
     unstarted = session.run("a", stream=True)
 
@@ -577,7 +539,7 @@ async def test_an_unstarted_stream_does_not_hold_the_session() -> None:
 
 
 async def test_a_second_run_while_running_is_refused() -> None:
-    model = FakeModel([_assistant(content="first answer")])
+    model = ScriptedModel([_assistant(content="first answer")])
     session = Agent(model=model).start()
 
     first = session.run("a", stream=True)
@@ -593,7 +555,7 @@ async def test_a_second_run_while_running_is_refused() -> None:
 
 
 async def test_a_second_stream_is_refused_on_its_first_step() -> None:
-    model = FakeModel([_assistant(content="first answer")])
+    model = ScriptedModel([_assistant(content="first answer")])
     session = Agent(model=model).start()
     first = session.run("a", stream=True)
     await anext(first)
@@ -608,7 +570,7 @@ async def test_a_second_stream_is_refused_on_its_first_step() -> None:
 
 
 async def test_resume_while_running_is_refused() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "add", a=1, b=1), _assistant(content="finished")]
     )
     session = Agent(model=model, tools=[add]).start()
@@ -622,7 +584,7 @@ async def test_resume_while_running_is_refused() -> None:
 
 
 async def test_running_again_from_a_callback_is_refused() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "add", a=1, b=1), _assistant(content="unreached")]
     )
     session = Agent(model=model, tools=[add]).start()
@@ -641,7 +603,7 @@ async def test_running_again_from_a_callback_is_refused() -> None:
 async def test_run_and_resume_can_be_scheduled_as_tasks() -> None:
     # mypy checks this file, so these create_task calls also pin that the
     # non-streaming run() and resume() are typed as coroutines.
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "add", a=1, b=1), _assistant(content="finished")]
     )
     session = Agent(model=model, tools=[add]).start()
@@ -652,19 +614,21 @@ async def test_run_and_resume_can_be_scheduled_as_tasks() -> None:
     resumed: asyncio.Task[str] = asyncio.create_task(session.resume())
     assert await resumed == "finished"
 
-    agent = Agent(model=FakeModel([_assistant(content="x")]))
+    agent = Agent(model=ScriptedModel([_assistant(content="x")]))
     one_shot: asyncio.Task[str] = asyncio.create_task(agent.run("q"))
     assert await one_shot == "x"
 
 
 async def test_sessions_run_one_after_another_and_agents_run_concurrently() -> None:
     session = Agent(
-        model=FakeModel([_assistant(content="a"), _assistant(content="b")])
+        model=ScriptedModel([_assistant(content="a"), _assistant(content="b")])
     ).start()
     assert await session.run("1") == "a"
     assert await session.run("2") == "b"
 
-    agent = Agent(model=FakeModel([_assistant(content="x"), _assistant(content="y")]))
+    agent = Agent(
+        model=ScriptedModel([_assistant(content="x"), _assistant(content="y")])
+    )
     assert sorted(await asyncio.gather(agent.run("1"), agent.run("2"))) == ["x", "y"]
 
 
@@ -676,7 +640,7 @@ def _event_names(events: list[Event]) -> list[str]:
 
 
 async def test_final_answer_emits_no_tool_events() -> None:
-    model = FakeModel([_tool_turn("c1", "final_answer", answer="x")])
+    model = ScriptedModel([_tool_turn("c1", "final_answer", answer="x")])
     session = Agent(model=model).start()
 
     events = [event async for event in session.run("go", stream=True)]
@@ -692,7 +656,7 @@ async def test_final_answer_emits_no_tool_events() -> None:
 
 
 async def test_a_tool_and_final_answer_in_one_step() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _assistant(
                 tool_calls=[
@@ -721,7 +685,7 @@ async def test_a_tool_and_final_answer_in_one_step() -> None:
 
 
 async def test_text_then_final_answer() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _assistant(
                 content="thinking",
@@ -738,7 +702,7 @@ async def test_text_then_final_answer() -> None:
 
 
 async def test_final_answer_with_bad_arguments_is_recorded_not_shown() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "final_answer", wrong=1), _assistant(content="recovered")]
     )
     session = Agent(model=model).start()
@@ -765,7 +729,7 @@ async def test_async_step_callback_runs_before_the_step_event() -> None:
         await asyncio.sleep(0)
         log.append("callback")
 
-    model = FakeModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="ok")])
+    model = ScriptedModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="ok")])
     session = Agent(model=model, tools=[add], step_callbacks=[record]).start()
 
     async for event in session.run("go", stream=True):
@@ -789,7 +753,7 @@ async def test_step_callbacks_run_in_registration_order() -> None:
     def third(step: Step) -> None:
         log.append("third")
 
-    model = FakeModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="ok")])
+    model = ScriptedModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="ok")])
     session = Agent(model=model, tools=[add], step_callbacks=[first, second]).start()
     session.step_callbacks.append(third)
 
@@ -802,7 +766,7 @@ async def test_a_raising_callback_on_the_final_answer_step_keeps_the_answer() ->
     def boom(step: Step) -> None:
         raise ValueError("boom")
 
-    model = FakeModel([_tool_turn("c1", "final_answer", answer="42")])
+    model = ScriptedModel([_tool_turn("c1", "final_answer", answer="42")])
     session = Agent(model=model, step_callbacks=[boom]).start()
 
     with pytest.raises(ValueError, match="boom"):
@@ -823,7 +787,7 @@ async def test_a_raising_async_callback_stops_the_run_after_recording() -> None:
     async def boom(step: Step) -> None:
         raise ValueError("boom")
 
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "add", a=1, b=1), _assistant(content="unreached")]
     )
     session = Agent(model=model, tools=[add], step_callbacks=[boom]).start()
@@ -852,7 +816,7 @@ def _load_skill_turn(call_id: str, skill_name: str) -> ChatMessage:
 
 
 def test_skill_catalog_is_added_to_the_system_prompt() -> None:
-    agent = Agent(model=FakeModel([]), skills=[_REVIEWER_SKILL])
+    agent = Agent(model=ScriptedModel([]), skills=[_REVIEWER_SKILL])
     session = agent.start()
 
     assert "load_skill" in session.tools
@@ -864,13 +828,13 @@ def test_skill_catalog_is_added_to_the_system_prompt() -> None:
 
 
 def test_no_skills_means_no_load_skill_tool() -> None:
-    agent = Agent(model=FakeModel([]))
+    agent = Agent(model=ScriptedModel([]))
 
     assert "load_skill" not in agent.start().tools
 
 
 async def test_load_skill_reveals_the_body() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _load_skill_turn("c1", "reviewer"),
             _assistant(content="done"),
@@ -887,7 +851,7 @@ async def test_load_skill_reveals_the_body() -> None:
 
 
 async def test_load_skill_registers_the_skills_tools() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _load_skill_turn("c1", "calc"),
             _tool_turn("c2", "multiply", a=6, b=7),
@@ -912,7 +876,7 @@ async def test_load_skill_registers_the_skills_tools() -> None:
 
 
 async def test_load_unknown_skill_is_an_error_observation() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _load_skill_turn("c1", "ghost"),
             _assistant(content="recovered"),
@@ -935,7 +899,7 @@ def test_skill_can_be_loaded_from_a_path(tmp_path: Path) -> None:
         "---\nname: greeter\ndescription: Greet warmly.\n---\nSay hi.\n",
         encoding="utf-8",
     )
-    agent = Agent(model=FakeModel([]), skills=[folder])
+    agent = Agent(model=ScriptedModel([]), skills=[folder])
 
     assert "greeter" in agent.skills
     assert "greeter" in agent.instructions
@@ -946,16 +910,16 @@ def test_skill_can_be_loaded_from_a_path(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 def test_duplicate_tool_name_raises() -> None:
     with pytest.raises(ValueError, match="Duplicate tool name"):
-        Agent(model=FakeModel([]), tools=[add, add])
+        Agent(model=ScriptedModel([]), tools=[add, add])
 
 
 def test_max_steps_below_one_raises() -> None:
     with pytest.raises(ValueError, match="at least 1"):
-        Agent(model=FakeModel([]), max_steps=0)
+        Agent(model=ScriptedModel([]), max_steps=0)
 
 
 async def test_run_max_steps_below_one_raises() -> None:
-    agent = Agent(model=FakeModel([_assistant(content="unused")]))
+    agent = Agent(model=ScriptedModel([_assistant(content="unused")]))
 
     with pytest.raises(ValueError, match="at least 1"):
         await agent.run("hi", max_steps=0)
@@ -965,7 +929,7 @@ async def test_run_max_steps_below_one_raises() -> None:
 # Session isolation
 # --------------------------------------------------------------------------- #
 async def test_sessions_keep_separate_memory() -> None:
-    agent = Agent(model=FakeModel([_assistant(content="one")]))
+    agent = Agent(model=ScriptedModel([_assistant(content="one")]))
     s1 = agent.start()
     s2 = agent.start()
 
@@ -977,7 +941,7 @@ async def test_sessions_keep_separate_memory() -> None:
 
 
 async def test_skill_tools_do_not_leak_between_sessions() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _load_skill_turn("c1", "calc"),
             _tool_turn("c2", "multiply", a=2, b=2),
@@ -995,7 +959,7 @@ async def test_skill_tools_do_not_leak_between_sessions() -> None:
 
 
 async def test_interrupt_affects_only_its_session() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "add", a=1, b=1), _assistant(content="s2 done")]
     )
     agent = Agent(model=model, tools=[add])
@@ -1065,7 +1029,9 @@ async def test_persistently_malformed_output_raises_model_error() -> None:
 # Timeouts and cancellation
 # --------------------------------------------------------------------------- #
 async def test_tool_timeout_becomes_observation() -> None:
-    model = FakeModel([_tool_turn("c1", "slow", seconds=5), _assistant(content="done")])
+    model = ScriptedModel(
+        [_tool_turn("c1", "slow", seconds=5), _assistant(content="done")]
+    )
     agent = Agent(model=model, tools=[slow], tool_timeout=0.01)
     session = agent.start()
 
@@ -1077,7 +1043,7 @@ async def test_tool_timeout_becomes_observation() -> None:
 
 
 async def test_parallel_timeout_keeps_other_results() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _assistant(
                 tool_calls=[
@@ -1118,7 +1084,9 @@ async def test_model_stream_timeout_raises_model_error() -> None:
 
 
 async def test_cancellation_propagates_during_a_tool() -> None:
-    model = FakeModel([_tool_turn("c1", "slow", seconds=5), _assistant(content="done")])
+    model = ScriptedModel(
+        [_tool_turn("c1", "slow", seconds=5), _assistant(content="done")]
+    )
     agent = Agent(model=model, tools=[slow])  # no timeout: relies on cancellation
 
     async def run_it() -> str:
@@ -1166,7 +1134,7 @@ async def test_sync_tools_run_off_the_event_loop_thread() -> None:
         """Return the id of the thread the tool ran on."""
         return threading.get_ident()
 
-    model = FakeModel([_tool_turn("c1", "where"), _assistant(content="ok")])
+    model = ScriptedModel([_tool_turn("c1", "where"), _assistant(content="ok")])
     agent = Agent(model=model, tools=[where])
     session = agent.start()
 
@@ -1183,7 +1151,7 @@ async def test_tool_output_is_truncated() -> None:
         """Return a large string."""
         return "x" * 1000
 
-    model = FakeModel([_tool_turn("c1", "big"), _assistant(content="ok")])
+    model = ScriptedModel([_tool_turn("c1", "big"), _assistant(content="ok")])
     agent = Agent(model=model, tools=[big], max_tool_output_chars=100)
     session = agent.start()
 
@@ -1201,7 +1169,7 @@ async def test_errors_are_shown_by_default() -> None:
         """Raise with a message."""
         raise RuntimeError("visible detail")
 
-    model = FakeModel([_tool_turn("c1", "leak"), _assistant(content="ok")])
+    model = ScriptedModel([_tool_turn("c1", "leak"), _assistant(content="ok")])
     agent = Agent(model=model, tools=[leak])
     session = agent.start()
 
@@ -1217,7 +1185,7 @@ async def test_error_redaction_hides_the_message() -> None:
         """Raise with a secret."""
         raise RuntimeError("token=SECRET123")
 
-    model = FakeModel([_tool_turn("c1", "leak"), _assistant(content="ok")])
+    model = ScriptedModel([_tool_turn("c1", "leak"), _assistant(content="ok")])
     agent = Agent(model=model, tools=[leak], redact_errors=True)
     session = agent.start()
 
@@ -1235,7 +1203,7 @@ async def test_tool_call_error_shown_even_when_redacting() -> None:
         """Raise a ToolCallError."""
         raise ToolCallError("use a positive number")
 
-    model = FakeModel([_tool_turn("c1", "bad"), _assistant(content="ok")])
+    model = ScriptedModel([_tool_turn("c1", "bad"), _assistant(content="ok")])
     agent = Agent(model=model, tools=[bad], redact_errors=True)
     session = agent.start()
 
@@ -1262,7 +1230,7 @@ async def test_non_parallel_safe_tools_run_in_order() -> None:
         order.append("second")
         return "2"
 
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _assistant(
                 tool_calls=[
@@ -1286,13 +1254,13 @@ async def test_non_parallel_safe_tools_run_in_order() -> None:
 # Memory hardening: cumulative usage and the context-window hook
 # --------------------------------------------------------------------------- #
 async def test_final_event_reports_cumulative_usage() -> None:
-    model = FakeModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="2")])
+    model = ScriptedModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="2")])
     agent = Agent(model=model, tools=[add])
 
     events = [event async for event in agent.run("go", stream=True)]
     final = events[-1]
     assert isinstance(final, FinalEvent)
-    # Each FakeModel turn reports Usage(1, 1); two turns sum to Usage(2, 2).
+    # Each ScriptedModel turn reports Usage(1, 1); two turns sum to Usage(2, 2).
     assert final.usage == Usage(2, 2)
 
 
@@ -1300,7 +1268,7 @@ async def test_context_manager_trims_the_prompt() -> None:
     def keep_only_system(messages: list[ChatMessage]) -> list[ChatMessage]:
         return messages[:1]
 
-    model = FakeModel([_assistant(content="ok")])
+    model = ScriptedModel([_assistant(content="ok")])
     agent = Agent(model=model, context_manager=keep_only_system)
 
     assert await agent.run("hello") == "ok"
@@ -1312,7 +1280,7 @@ async def test_context_manager_trims_the_prompt() -> None:
 # Terminal run status and print_events
 # --------------------------------------------------------------------------- #
 async def test_completed_run_reports_status() -> None:
-    model = FakeModel([_assistant(content="done")])
+    model = ScriptedModel([_assistant(content="done")])
     agent = Agent(model=model)
 
     events = [event async for event in agent.run("go", stream=True)]
@@ -1322,7 +1290,7 @@ async def test_completed_run_reports_status() -> None:
 
 
 async def test_interrupted_run_reports_status() -> None:
-    model = FakeModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="x")])
+    model = ScriptedModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="x")])
     agent = Agent(model=model, tools=[add])
     session = agent.start()
 
@@ -1343,7 +1311,7 @@ async def test_interrupted_run_reports_status() -> None:
 
 async def test_max_steps_run_reports_status() -> None:
     looping = [_tool_turn(f"c{i}", "add", a=1, b=1) for i in range(2)]
-    model = FakeModel([*looping, _assistant(content="forced")])
+    model = ScriptedModel([*looping, _assistant(content="forced")])
     agent = Agent(model=model, tools=[add], max_steps=2)
 
     events = [event async for event in agent.run("loop", stream=True)]
@@ -1354,7 +1322,7 @@ async def test_max_steps_run_reports_status() -> None:
 
 
 async def test_print_events_writes_to_file_and_returns_answer() -> None:
-    model = FakeModel([_tool_turn("c1", "add", a=2, b=3), _assistant(content="5")])
+    model = ScriptedModel([_tool_turn("c1", "add", a=2, b=3), _assistant(content="5")])
     agent = Agent(model=model, tools=[add])
 
     buffer = io.StringIO()
@@ -1380,7 +1348,7 @@ def test_load_skill_name_is_reserved_when_skills_are_configured() -> None:
         return name
 
     with pytest.raises(ValueError, match="reserved"):
-        Agent(model=FakeModel([]), tools=[load_skill], skills=[_REVIEWER_SKILL])
+        Agent(model=ScriptedModel([]), tools=[load_skill], skills=[_REVIEWER_SKILL])
 
 
 def test_truncate_middle_handles_tiny_limits() -> None:
@@ -1424,30 +1392,30 @@ def _results(session: AgentSession) -> list[Any]:
 
 def test_agent_rejects_invalid_subclass_tool() -> None:
     with pytest.raises(ValueError, match="'issues.create' is not a valid tool name"):
-        Agent(model=FakeModel([]), tools=[_SchemaTool("issues.create")])
+        Agent(model=ScriptedModel([]), tools=[_SchemaTool("issues.create")])
 
 
 def test_agent_rejects_non_object_schema_tool() -> None:
     with pytest.raises(ValueError, match='JSON Schema object with "type": "object"'):
         Agent(
-            model=FakeModel([]),
+            model=ScriptedModel([]),
             tools=[_SchemaTool("t", parameters={"type": "string"})],
         )
 
 
 async def test_add_tools_exposes_tool_on_next_call() -> None:
-    model = FakeModel([_tool_turn("c1", "a"), _assistant(content="done")])
+    model = ScriptedModel([_tool_turn("c1", "a"), _assistant(content="done")])
     session = Agent(model=model).start()
 
     session.add_tools([_SchemaTool("a", label="from a")])
 
     assert await session.run("go") == "done"
-    assert _tool_names(model.tool_definitions[0]) == ["final_answer", "a"]
+    assert _tool_names(model.tools[0]) == ["final_answer", "a"]
     assert _results(session)[0].content == "from a"
 
 
 async def test_add_tools_mid_run_visible_next_step() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "b"), _tool_turn("c2", "a"), _assistant(content="done")]
     )
     agent = Agent(model=model, tools=[_SchemaTool("b")])
@@ -1462,13 +1430,13 @@ async def test_add_tools_mid_run_visible_next_step() -> None:
     session.step_callbacks.append(add_after_first_step)
 
     assert await session.run("go") == "done"
-    assert "a" not in _tool_names(model.tool_definitions[0])
-    assert "a" in _tool_names(model.tool_definitions[1])
+    assert "a" not in _tool_names(model.tools[0])
+    assert "a" in _tool_names(model.tools[1])
     assert _results(session)[1].is_error is False
 
 
 def test_add_tools_duplicate_in_batch_is_atomic() -> None:
-    session = Agent(model=FakeModel([])).start()
+    session = Agent(model=ScriptedModel([])).start()
     before = list(session._tool_definitions)
 
     with pytest.raises(ValueError, match="Duplicate tool name: 'a'"):
@@ -1479,7 +1447,7 @@ def test_add_tools_duplicate_in_batch_is_atomic() -> None:
 
 
 def test_add_tools_existing_name_without_replace() -> None:
-    session = Agent(model=FakeModel([])).start()
+    session = Agent(model=ScriptedModel([])).start()
     original = _SchemaTool("a")
     session.add_tools([original])
 
@@ -1490,7 +1458,7 @@ def test_add_tools_existing_name_without_replace() -> None:
 
 
 async def test_add_tools_replace_keeps_position() -> None:
-    model = FakeModel([_tool_turn("c1", "a"), _assistant(content="done")])
+    model = ScriptedModel([_tool_turn("c1", "a"), _assistant(content="done")])
     session = Agent(model=model, tools=[_SchemaTool("x")]).start()
     session.add_tools([_SchemaTool("a", label="v1"), _SchemaTool("y")])
     position = _tool_names(session._tool_definitions).index("a")
@@ -1505,7 +1473,7 @@ async def test_add_tools_replace_keeps_position() -> None:
 
 
 def test_add_tools_invalid_tool_is_atomic() -> None:
-    session = Agent(model=FakeModel([])).start()
+    session = Agent(model=ScriptedModel([])).start()
 
     with pytest.raises(ValueError, match="not a valid tool name"):
         session.add_tools([_SchemaTool("good"), _SchemaTool("bad.name")])
@@ -1514,7 +1482,7 @@ def test_add_tools_invalid_tool_is_atomic() -> None:
 
 
 def test_add_tools_accepts_generator_and_empty() -> None:
-    session = Agent(model=FakeModel([])).start()
+    session = Agent(model=ScriptedModel([])).start()
 
     session.add_tools(t for t in [_SchemaTool("a")])
     session.add_tools([])
@@ -1524,7 +1492,7 @@ def test_add_tools_accepts_generator_and_empty() -> None:
 
 
 def test_add_tools_is_session_local() -> None:
-    agent = Agent(model=FakeModel([]))
+    agent = Agent(model=ScriptedModel([]))
     s1 = agent.start()
     s2 = agent.start()
 
@@ -1536,7 +1504,7 @@ def test_add_tools_is_session_local() -> None:
 
 
 async def test_remove_tools_removes_tool_and_schema() -> None:
-    model = FakeModel([_assistant(content="done")])
+    model = ScriptedModel([_assistant(content="done")])
     session = Agent(model=model).start()
     session.add_tools([_SchemaTool("a"), _SchemaTool("b")])
 
@@ -1544,13 +1512,13 @@ async def test_remove_tools_removes_tool_and_schema() -> None:
 
     assert "a" not in session.tools
     await session.run("go")
-    names = _tool_names(model.tool_definitions[0])
+    names = _tool_names(model.tools[0])
     assert "a" not in names
     assert "b" in names
 
 
 def test_remove_tools_unknown_is_atomic() -> None:
-    session = Agent(model=FakeModel([])).start()
+    session = Agent(model=ScriptedModel([])).start()
     session.add_tools([_SchemaTool("a")])
 
     with pytest.raises(ValueError, match="Unknown tool: 'missing'"):
@@ -1560,7 +1528,7 @@ def test_remove_tools_unknown_is_atomic() -> None:
 
 
 def test_remove_tools_dedupes_and_empty() -> None:
-    session = Agent(model=FakeModel([])).start()
+    session = Agent(model=ScriptedModel([])).start()
     session.add_tools([_SchemaTool("a")])
 
     session.remove_tools(["a", "a"])
@@ -1570,7 +1538,7 @@ def test_remove_tools_dedupes_and_empty() -> None:
 
 
 def test_reserved_names_cannot_be_removed() -> None:
-    session = Agent(model=FakeModel([]), skills=[_REVIEWER_SKILL]).start()
+    session = Agent(model=ScriptedModel([]), skills=[_REVIEWER_SKILL]).start()
 
     with pytest.raises(ValueError, match="'final_answer' is a reserved tool name."):
         session.remove_tools(["final_answer"])
@@ -1581,7 +1549,7 @@ def test_reserved_names_cannot_be_removed() -> None:
 
 
 def test_reserved_names_cannot_be_replaced() -> None:
-    session = Agent(model=FakeModel([]), skills=[_REVIEWER_SKILL]).start()
+    session = Agent(model=ScriptedModel([]), skills=[_REVIEWER_SKILL]).start()
     final_answer = session.tools["final_answer"]
     load_skill = session.tools["load_skill"]
 
@@ -1594,7 +1562,7 @@ def test_reserved_names_cannot_be_replaced() -> None:
 
 
 def test_load_skill_not_reserved_without_skills() -> None:
-    session = Agent(model=FakeModel([])).start()
+    session = Agent(model=ScriptedModel([])).start()
 
     session.add_tools([_SchemaTool("load_skill")])
 
@@ -1602,7 +1570,7 @@ def test_load_skill_not_reserved_without_skills() -> None:
 
 
 async def test_removed_tool_call_returns_unknown_tool() -> None:
-    model = FakeModel([_tool_turn("c1", "a"), _assistant(content="recovered")])
+    model = ScriptedModel([_tool_turn("c1", "a"), _assistant(content="recovered")])
     session = Agent(model=model).start()
     session.add_tools([_SchemaTool("a")])
     session.remove_tools(["a"])
@@ -1620,7 +1588,7 @@ async def test_removed_tool_call_returns_unknown_tool() -> None:
 
 
 async def test_removed_mid_run_tool_returns_unknown_tool() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [_tool_turn("c1", "a"), _tool_turn("c2", "a"), _assistant(content="done")]
     )
     session = Agent(model=model).start()
@@ -1639,7 +1607,7 @@ async def test_removed_mid_run_tool_returns_unknown_tool() -> None:
 
 
 async def test_load_skill_twice_is_idempotent() -> None:
-    model = FakeModel(
+    model = ScriptedModel(
         [
             _load_skill_turn("c1", "calc"),
             _load_skill_turn("c2", "calc"),
@@ -1650,7 +1618,7 @@ async def test_load_skill_twice_is_idempotent() -> None:
 
     assert await session.run("load twice") == "done"
     assert all(result.is_error is False for result in _results(session))
-    assert _tool_names(model.tool_definitions[2]).count("multiply") == 1
+    assert _tool_names(model.tools[2]).count("multiply") == 1
 
 
 async def test_load_skill_conflict_is_an_observation() -> None:
@@ -1664,7 +1632,7 @@ async def test_load_skill_conflict_is_an_observation() -> None:
         """
         return 0
 
-    model = FakeModel([_load_skill_turn("c1", "calc"), _assistant(content="done")])
+    model = ScriptedModel([_load_skill_turn("c1", "calc"), _assistant(content="done")])
     session = Agent(model=model, tools=[multiply], skills=[_CALC_SKILL]).start()
 
     assert await session.run("load calc") == "done"
@@ -1679,12 +1647,12 @@ async def test_load_skill_conflict_is_an_observation() -> None:
 
 
 async def test_memory_with_removed_tool_restores_and_runs() -> None:
-    first_model = FakeModel([_tool_turn("c1", "b"), _assistant(content="first")])
+    first_model = ScriptedModel([_tool_turn("c1", "b"), _assistant(content="first")])
     first = Agent(model=first_model, tools=[_SchemaTool("b")]).start()
     await first.run("use b")
     saved = first.memory.dump_json()
 
-    second_model = FakeModel([_assistant(content="second")])
+    second_model = ScriptedModel([_assistant(content="second")])
     second = Agent(model=second_model).start()
     second.memory = Memory.load_json(saved)
 

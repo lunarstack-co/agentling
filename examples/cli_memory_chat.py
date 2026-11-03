@@ -12,47 +12,15 @@ continuation is streamed so the terminal FinalEvent's status is shown too.
 from __future__ import annotations
 
 import asyncio
-import json
-from collections.abc import AsyncIterator, Sequence
 
 from agentling import (
     Agent,
     ChatMessage,
-    Delta,
     FinalEvent,
     Memory,
-    ToolCallDelta,
-    ToolDefinition,
     Usage,
 )
-
-
-class ScriptedModel:
-    """A deterministic offline model that replays fixed assistant turns."""
-
-    def __init__(self, turns: Sequence[ChatMessage]) -> None:
-        self._turns = list(turns)
-        self._index = 0
-
-    async def stream(
-        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition] = ()
-    ) -> AsyncIterator[Delta]:
-        turn = self._turns[self._index]
-        self._index += 1
-        if turn.content:
-            yield Delta(content=turn.content)
-        for index, call in enumerate(turn.tool_calls):
-            yield Delta(
-                tool_calls=[
-                    ToolCallDelta(
-                        index=index,
-                        id=call.id,
-                        name=call.name,
-                        arguments=json.dumps(call.arguments),
-                    )
-                ]
-            )
-        yield Delta(usage=turn.usage)
+from agentling.testing import ScriptedModel
 
 
 def _assistant(content: str) -> ChatMessage:

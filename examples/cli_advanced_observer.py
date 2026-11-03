@@ -12,58 +12,26 @@ prompt, and a model_timeout.
 from __future__ import annotations
 
 import asyncio
-import json
-from collections.abc import AsyncIterator, Sequence
 
 from agentling import (
     Agent,
     ChatMessage,
-    Delta,
     FinalEvent,
     StepEvent,
     TextDelta,
     ToolCall,
-    ToolCallDelta,
     ToolCallEvent,
-    ToolDefinition,
     ToolResultEvent,
     Usage,
     tool,
 )
+from agentling.testing import ScriptedModel
 
 
 @tool
 def health_check() -> str:
     """Report a one-line service health status."""
     return "all systems nominal"
-
-
-class ScriptedModel:
-    """A deterministic offline model that replays fixed assistant turns."""
-
-    def __init__(self, turns: Sequence[ChatMessage]) -> None:
-        self._turns = list(turns)
-        self._index = 0
-
-    async def stream(
-        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition] = ()
-    ) -> AsyncIterator[Delta]:
-        turn = self._turns[self._index]
-        self._index += 1
-        if turn.content:
-            yield Delta(content=turn.content)
-        for index, call in enumerate(turn.tool_calls):
-            yield Delta(
-                tool_calls=[
-                    ToolCallDelta(
-                        index=index,
-                        id=call.id,
-                        name=call.name,
-                        arguments=json.dumps(call.arguments),
-                    )
-                ]
-            )
-        yield Delta(usage=turn.usage)
 
 
 def _assistant(

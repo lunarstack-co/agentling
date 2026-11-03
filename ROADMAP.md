@@ -53,22 +53,21 @@ Make every run inspectable and testable.
 - **OpenTelemetry adapter.** Emit standard GenAI spans so traces flow to
   Langfuse, LangSmith, Arize Phoenix, and any OTLP backend through one
   integration, not a bespoke plugin per vendor.
-- **Offline testing and evals.** A public, deterministic testing model (run and
-  test your agent with no API key), plus an evaluation harness — datasets and
-  evaluators — that works locally or against a hosted experiment backend.
+- **Evals.** An evaluation harness, with datasets and evaluators, that works
+  locally or against a hosted experiment backend. The deterministic testing
+  model it builds on shipped early, in 0.2.0: `agentling.testing` has
+  `ScriptedModel` and the `check_model` conformance checker.
 
-## Later — More models (v0.4)
+## Model adapters: none in the package
 
-Meet people where their models already are.
-
-- **OpenAI-compatible tier.** A documented provider matrix and light ergonomics
-  for OpenRouter, Groq, Together, Fireworks, DeepSeek, Mistral, xAI, local
-  servers (Ollama, vLLM, LM Studio), and Azure OpenAI — most already work by
-  pointing at a base URL.
-- **Native Anthropic (Claude).** A first-class adapter on the Messages API with
-  tool use, streaming, usage, and prompt caching — beyond the lossy
-  compatibility endpoint.
-- **More.** Native Gemini; optionally a litellm bridge and AWS Bedrock / Vertex.
+agentling ships no model providers, and that is a decision, not a gap. Any
+object with a `stream(messages, tools)` method is a model, and
+`agentling.testing.check_model` proves an adapter follows the contract.
+[`examples/providers/`](examples/providers/) has reference adapters to copy:
+OpenAI-compatible (which also covers OpenRouter, Groq, Together, DeepSeek,
+Mistral, xAI, vLLM, LM Studio and Gemini's compatibility endpoint), Anthropic
+Messages and native Ollama. New reference adapters are welcome when they come
+with a recorded fixture that passes `check_model`.
 
 ## Exploring — beyond
 

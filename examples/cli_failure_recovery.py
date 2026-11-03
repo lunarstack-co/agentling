@@ -13,21 +13,17 @@ rather than crashing, so the run recovers on its own.
 from __future__ import annotations
 
 import asyncio
-import json
-from collections.abc import AsyncIterator, Sequence
 
 from agentling import (
     ActionStep,
     Agent,
     ChatMessage,
-    Delta,
     ToolCall,
-    ToolCallDelta,
     ToolCallError,
-    ToolDefinition,
     Usage,
     tool,
 )
+from agentling.testing import ScriptedModel
 
 
 @tool
@@ -47,34 +43,6 @@ def divide(a: float, b: float) -> float:
 def fetch_rate() -> float:
     """Fetch a conversion rate from an unreliable upstream service."""
     raise RuntimeError("upstream service unavailable")
-
-
-class ScriptedModel:
-    """A deterministic offline model that replays fixed assistant turns."""
-
-    def __init__(self, turns: Sequence[ChatMessage]) -> None:
-        self._turns = list(turns)
-        self._index = 0
-
-    async def stream(
-        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition] = ()
-    ) -> AsyncIterator[Delta]:
-        turn = self._turns[self._index]
-        self._index += 1
-        if turn.content:
-            yield Delta(content=turn.content)
-        for index, call in enumerate(turn.tool_calls):
-            yield Delta(
-                tool_calls=[
-                    ToolCallDelta(
-                        index=index,
-                        id=call.id,
-                        name=call.name,
-                        arguments=json.dumps(call.arguments),
-                    )
-                ]
-            )
-        yield Delta(usage=turn.usage)
 
 
 def _assistant(

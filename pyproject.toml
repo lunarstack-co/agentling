@@ -1,7 +1,7 @@
 [project]
 name = "agentling"
 version = "0.2.0"
-description = "A tiny async tool-calling agent framework"
+description = "A small agent engine for Python: the tool-calling loop, typed memory and streamed events, with any model you bring."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Folarin Akinloye", email = "me@folarin.dev" }
 ]
-keywords = ["agents", "llm", "ai", "tool-calling", "agent-framework", "async"]
+keywords = ["agents", "llm", "ai", "tool-calling", "agent-engine", "async"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
