@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://agentling.dev/brand/logo/agentling-horizontal-white.svg">
+    <img alt="Agentling" src="https://agentling.dev/brand/logo/agentling-horizontal-black.svg" height="56">
+  </picture>
+</p>
+
 # Agentling
 
 [![PyPI](https://img.shields.io/pypi/v/agentling.svg)](https://pypi.org/project/agentling/)
