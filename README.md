@@ -423,9 +423,10 @@ uv run python -m examples.cli_notes_agent             # timeouts, redaction and 
 
 ## Getting help
 
-Open an issue on [GitHub](https://github.com/lunarstack-co/agentling/issues)
-for a bug or a question. Report security problems privately, as described in
-[SECURITY.md](SECURITY.md).
+Ask a question or share an idea in
+[Discussions](https://github.com/lunarstack-co/agentling/discussions). Open an
+[issue](https://github.com/lunarstack-co/agentling/issues) for a bug. Report
+security problems privately, as described in [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
