@@ -28,6 +28,13 @@ its own. `examples/providers/openai_chat.py` is one to copy.
   with a retryable error before its first chunk, with backoff and jitter,
   honouring `retry_after` up to `max_delay`. `retry=None` turns retries off.
 - `deltas_from_message`, for adapters whose backend doesn't stream.
+- `AgentSession.resume()`, which continues an interrupted or failed run from
+  memory without adding the task again, and `AgentSession.is_running`.
+- `ModelOutputTruncatedError`, raised when the model's output limit cuts a tool
+  call short. The loop no longer asks the model to fix such a call.
+- Step callbacks can be `async`. Callbacks run in order and are awaited before
+  the step's `StepEvent`. `StepCallback` is their type, and
+  `AgentSession.step_callbacks` is a `list[StepCallback]`.
 - A reference adapter for OpenAI-compatible endpoints in
   `examples/providers/openai_chat.py`. It needs `httpx`, which agentling
   itself doesn't depend on.
@@ -41,6 +48,17 @@ its own. `examples/providers/openai_chat.py` is one to copy.
 - `FinalEvent.usage` is `None` when the model never reported usage, instead of
   zero counts.
 - `interrupt()` also ends a wait between retries.
+- `interrupt()` while no run is active does nothing. It used to stop the next
+  run before its first step and leave its task in memory.
+- A session runs one task at a time: `run()` or `resume()` during a run raises
+  `RuntimeError("Session is already running")`.
+- `final_answer` no longer produces a `ToolCallEvent` or `ToolResultEvent`; the
+  step's `StepEvent` is followed by the `FinalEvent`. The call is still
+  recorded in memory.
+- Turns whose tool calls can't be parsed no longer count towards `max_steps`.
+- `run(..., stream=True)` is typed as an async generator, so it can be closed
+  early with `contextlib.aclosing`, and `run()` without it as a coroutine, so
+  it can be passed to `asyncio.create_task`.
 - The answer forced at the step limit goes through `context_manager`, retries
   and interrupts like any other turn.
 - `Agent()` raises `TypeError` straight away for a model without a usable
@@ -65,6 +83,11 @@ its own. `examples/providers/openai_chat.py` is one to copy.
 - Retries no longer stack. agentling used to retry on top of the OpenAI SDK's
   own retries, up to nine attempts per request.
 - Interrupting a run mid-stream now closes the adapter's stream.
+- An interrupt during the last step stops the run instead of making one more
+  model call for the step-limit answer.
+- A step callback that raises on the step where the model called
+  `final_answer` no longer loses the answer: it is in memory, and the run is
+  not left looking resumable.
 
 ## [0.1.1] - 2026-10-29
 

@@ -357,6 +357,12 @@ calls on one shared agent never touch each other's memory or tools. When you
 need multi-turn, inspection, or interruption, hold a session with
 `agent.start()`.
 
+A session runs one task at a time. Calling `run()` or `resume()` while
+`session.is_running` is `True` raises `RuntimeError("Session is already
+running")`; use a separate session for work that should run in parallel.
+`resume()` checks that there is something to resume first, so on a session
+whose run has already finished it raises `ValueError("Nothing to resume")`.
+
 ```python
 # one-shot: simplest, and safe under concurrency
 answer = await agent.run("A single question")
@@ -383,9 +389,9 @@ restored = agent.start()
 restored.memory = Memory.load_json(saved)
 ```
 
-By default each `run()` starts fresh. Pass `reset=False` to continue from the
-session's existing memory, which is how a multi-turn conversation or a resumed
-run works:
+By default each `run()` starts fresh. Pass `reset=False` to keep the session's
+memory and add the new task as the next user turn, which is how a multi-turn
+conversation works:
 
 ```python
 session = agent.start()
@@ -393,19 +399,51 @@ await session.run("First question")
 await session.run("A follow-up", reset=False)   # sees the earlier turn
 ```
 
+To carry on with an interrupted or failed run without adding a new user turn,
+call `session.resume()` (see [Interruption](#interruption)).
+
 ### Interruption
 
 Call `session.interrupt()` to request a graceful stop. The current run does not
-crash; it finishes at the next step boundary and the session's memory is
-preserved, so you can resume it with `run(..., reset=False)`.
+crash: it stops at the next step, streamed chunk or retry wait, ends with a
+`FinalEvent` whose status is `"interrupted"`, and keeps its memory. Call
+`session.resume()` to carry on from there without adding a new user turn.
 
 ```python
 session = agent.start()
-session.interrupt()            # from a signal handler, another task, a UI button
-await session.run(task)        # returns "Run interrupted." at the next boundary
-# ... later ...
-await session.run(task, reset=False)   # picks up where it left off
+job = asyncio.create_task(session.run("Long job"))
+await asyncio.sleep(0)            # let the run start: a real model suspends on its first request
+session.interrupt()
+await job                         # "Run interrupted."
+await session.resume()            # continues from memory, same task
 ```
+
+An `interrupt()` made while no run is active does nothing, so a stray key press
+between runs never stops the next one. `resume()` raises
+`ValueError("Nothing to resume")` when memory is empty or already ends with a
+final answer. Call `resume()` after the stream has finished, not from inside the
+loop that consumes it: the session counts as running until its last event has
+been consumed.
+
+`interrupt()` is meant to be called on the run's event loop, for example from
+another task. From another thread, schedule it with
+`loop.call_soon_threadsafe(session.interrupt)`.
+
+If you stop iterating `run(..., stream=True)` early, close the stream so the
+session is free for its next run. `contextlib.aclosing` does that:
+
+```python
+from contextlib import aclosing
+
+async with aclosing(session.run(task, stream=True)) as events:
+    async for event in events:
+        if should_stop(event):
+            break
+```
+
+The same applies when an exception escapes the loop body. Without `aclosing`,
+the stream stays open until Python collects it, and until then the session
+reports `is_running` and refuses another run.
 
 ### Models and other providers
 
@@ -479,11 +517,12 @@ second implementation to keep in sync.
   │       - each text chunk is yielded as a TextDelta               │
   │       - agglomerate_deltas() rebuilds one ChatMessage           │
   │ 4. no tool calls?  -> that text is the answer; finish           │
-  │ 5. for each tool call: yield ToolCallEvent                      │
+  │ 5. yield ToolCallEvent per call (none for final_answer)         │
   │ 6. execute tools (concurrently by default) -> ToolResults       │
   │       - a raised exception becomes an error observation         │
   │       - an exact repeat of last step's calls gets a nudge       │
-  │ 7. yield ToolResultEvent per result; record an ActionStep       │
+  │ 7. yield ToolResultEvent per result (none for final_answer);    │
+  │    record an ActionStep, run step_callbacks, yield StepEvent    │
   │ 8. final_answer called?  -> finish with FinalEvent              │
   └───────────────────────────────────────────────────────────────┘
           │
@@ -550,10 +589,17 @@ The loop communicates progress through a small set of frozen event types:
 | Event | Meaning |
 | --- | --- |
 | `TextDelta` | A chunk of streamed assistant text. |
-| `ToolCallEvent` | Emitted just before a tool call runs. |
-| `ToolResultEvent` | Emitted after a tool call completes (success or error). |
+| `ToolCallEvent` | Emitted just before a tool call runs. Never for `final_answer`. |
+| `ToolResultEvent` | Emitted after a tool call completes (success or error). Never for `final_answer`. |
 | `StepEvent` | Emitted after a step is recorded to memory; carries the step. |
 | `FinalEvent` | Emitted once when the run ends; carries the answer and usage. |
+
+`final_answer` is how the model ends a run, not a tool call to show, so it
+produces no tool events: its step's `StepEvent` is followed by the
+`FinalEvent`. The call and its result are still in the `ActionStep` the
+`StepEvent` carries, so saved memory keeps the whole exchange. A `final_answer`
+call that fails validation emits no events either: its error result is on that
+`ActionStep`, and the model gets another turn.
 
 `StepEvent` is the bridge between the live event stream and the durable memory:
 it carries the exact `ActionStep` that was just written. `print_events` is a
@@ -613,11 +659,25 @@ break out of a stuck cycle without a hard failure.
 
 #### Graceful interruption and resume
 
-`interrupt()` sets an event that the loop checks at the top of each step. When
-set, the loop emits a final "Run interrupted." event and returns without writing
-a terminal `FinalStep`. Because memory is left intact and no terminal step is
-written, `run(..., reset=False)` can pick the run back up exactly where it
-paused.
+`interrupt()` sets a flag that the loop checks at the top of each step, after
+each streamed chunk, during a wait between retries, and before the step-limit
+answer. When set, the loop emits a final "Run interrupted." event and returns
+without writing a terminal `FinalStep`. Every run clears the flag when it
+starts, so an interrupt made between runs is ignored. Because memory is left
+intact, `resume()` picks the run back up exactly where it paused.
+
+#### Unparseable and cut-off tool calls
+
+If a turn's tool calls can't be parsed, the loop tells the model what was wrong
+and asks again, up to twice in a row before raising `ModelError`. These
+corrections don't count towards `max_steps`, so one run makes at most
+`max_steps * 3 + 1` model turns, not counting retries of a turn that failed
+before its first chunk: each step can follow two corrections, plus the
+step-limit answer. If the turn also stopped because
+the model hit its output limit (`finish_reason == "length"`), asking again
+can't help, so the loop raises `ModelOutputTruncatedError` straight away; raise
+the model's output limit or ask for less. A plain-text answer cut off the same
+way still completes, with `FinalEvent.finish_reason == "length"`.
 
 #### Concurrent tool execution
 
@@ -636,7 +696,7 @@ instead (useful when tools share state or must not interleave).
 | `skills` | `()` | Skills as folder paths or `Skill` objects. |
 | `instructions` | built-in default | The system prompt. A skill catalog is appended when skills are present. |
 | `max_steps` | `15` | Maximum loop iterations before a forced answer. Must be at least 1. |
-| `step_callbacks` | `()` | Callables invoked with each `ActionStep` as it is recorded. |
+| `step_callbacks` | `()` | Called in order with each `ActionStep` once it is recorded, before its `StepEvent`. Async callbacks are awaited; one that raises stops the run. |
 | `parallel_tools` | `True` | Run a turn's tool calls concurrently, or in order when `False`. |
 | `tool_timeout` | `None` | Per-call time budget (seconds) for tools; a timeout becomes a recoverable observation. |
 | `model_timeout` | `None` | Longest wait (seconds) for each streamed chunk; exceeding it raises `ModelTimeoutError`, retried if nothing had arrived yet. |
@@ -658,9 +718,13 @@ instead (useful when tools share state or must not interleave).
 `agent.run(task, *, stream=False, reset=True, max_steps=None)`:
 
 - `stream=False` returns an awaitable that resolves to the final answer string.
-- `stream=True` returns an async iterator of `Event` objects.
-- `reset=False` continues from existing memory instead of starting fresh.
+- `stream=True` returns an async generator of `Event` objects.
+- `reset=False` keeps existing memory and adds the task as a new user turn.
 - `max_steps` overrides the agent's limit for this run only.
+
+`session.resume(*, stream=False, max_steps=None)` continues an interrupted or
+failed run from memory without a new task, with the same return types as
+`run()`. `session.is_running` is `True` while a run or resume is in progress.
 
 ## Development
 

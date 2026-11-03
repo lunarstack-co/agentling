@@ -15,6 +15,7 @@ from agentling.errors import (
     ModelAuthError,
     ModelError,
     ModelOutputError,
+    ModelOutputTruncatedError,
     ModelRateLimitError,
     ModelServerError,
     ModelTimeoutError,
@@ -478,6 +479,213 @@ async def test_interrupt_during_the_forced_final_stream() -> None:
     assert not any(isinstance(step, FinalStep) for step in session.memory.steps)
 
 
+async def test_interrupt_before_the_forced_final_skips_its_model_call() -> None:
+    fake = StreamFake([_call("add", '{"a": 1, "b": 2}'), _text("unreached")])
+    session = Agent(model=fake, tools=[add], max_steps=1).start()
+    session.step_callbacks.append(lambda step: session.interrupt())
+
+    final = [event async for event in session.run("go", stream=True)][-1]
+
+    assert isinstance(final, FinalEvent)
+    assert final.status == "interrupted"
+    assert len(fake.calls) == 1
+    assert not any(isinstance(step, FinalStep) for step in session.memory.steps)
+
+
+# --------------------------------------------------------------------------- #
+# Interrupting the first model call, and resuming afterwards
+# --------------------------------------------------------------------------- #
+class _InterruptsFirstCall:
+    """Interrupts its own session while streaming its first turn."""
+
+    def __init__(self) -> None:
+        self.session: AgentSession | None = None
+        self.calls: list[list[ChatMessage]] = []
+        self.finally_ran = False
+
+    async def stream(
+        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition] = ()
+    ) -> AsyncIterator[Delta]:
+        self.calls.append(list(messages))
+        if len(self.calls) > 1:
+            yield Delta(content="resumed")
+            return
+        try:
+            yield Delta(content="par")
+            assert self.session is not None
+            self.session.interrupt()
+            yield Delta(content="tial")
+        finally:
+            self.finally_ran = True
+
+
+async def test_interrupt_during_the_first_call_keeps_only_the_task() -> None:
+    model = _InterruptsFirstCall()
+    session = Agent(model=model).start()
+    model.session = session
+
+    final = [event async for event in session.run("go", stream=True)][-1]
+
+    assert isinstance(final, FinalEvent)
+    assert final.status == "interrupted"
+    assert session.memory.steps == [TaskStep(task="go")]
+    assert model.finally_ran
+
+
+async def test_resume_after_a_first_call_interrupt_sends_the_task_once() -> None:
+    model = _InterruptsFirstCall()
+    session = Agent(model=model).start()
+    model.session = session
+
+    assert await session.run("go") == "Run interrupted."
+    assert await session.resume() == "resumed"
+
+    assert [message.role for message in model.calls[1]] == ["system", "user"]
+    assert sum(isinstance(step, TaskStep) for step in session.memory.steps) == 1
+
+
+async def test_resume_after_a_failed_run_continues() -> None:
+    fake = StreamFake(
+        [_call("add", '{"a": 1, "b": 2}'), ModelServerError(), _text("done")]
+    )
+    session = Agent(model=fake, tools=[add], retry=None).start()
+
+    with pytest.raises(ModelServerError):
+        await session.run("go")
+    assert isinstance(session.memory.steps[-1], ActionStep)
+
+    assert await session.resume() == "done"
+    assert sum(isinstance(step, TaskStep) for step in session.memory.steps) == 1
+
+
+async def test_is_running_resets_after_a_run_raises() -> None:
+    session = Agent(model=StreamFake([ModelAuthError("bad key")])).start()
+
+    with pytest.raises(ModelAuthError):
+        await session.run("go")
+
+    assert session.is_running is False
+
+
+# --------------------------------------------------------------------------- #
+# Output cut off by the model's length limit
+# --------------------------------------------------------------------------- #
+_CUT_OFF = "Model output was cut off by its length limit while writing a tool call."
+
+
+def _malformed() -> list[Delta | BaseException]:
+    return _call("add", '{"a": ')
+
+
+def _truncated() -> list[Delta | BaseException]:
+    return [
+        Delta(tool_calls=[ToolCallDelta(0, "c1", "add", '{"a": 1, "b":')]),
+        Delta(finish_reason="length"),
+    ]
+
+
+def _corrections(fake: StreamFake) -> list[str]:
+    return [
+        message.content
+        for call in fake.calls
+        for message in call
+        if message.role == "user"
+        and message.content.startswith("Your previous response")
+    ]
+
+
+async def test_truncated_tool_call_raises_without_a_correction() -> None:
+    fake = StreamFake([_truncated(), _text("unreached")])
+    session = Agent(model=fake, tools=[add]).start()
+
+    with pytest.raises(ModelOutputTruncatedError) as caught:
+        await session.run("go")
+
+    assert str(caught.value) == _CUT_OFF
+    assert len(fake.calls) == 1
+    assert _corrections(fake) == []
+    assert session.memory.steps == [TaskStep(task="go")]
+
+
+async def test_truncation_reported_on_the_same_delta_is_detected() -> None:
+    cut = ToolCallDelta(0, "c1", "add", '{"a": 1, "b":')
+    fake = StreamFake([[Delta(tool_calls=[cut], finish_reason="length")]])
+
+    with pytest.raises(ModelOutputTruncatedError):
+        await Agent(model=fake, tools=[add]).run("go")
+    assert len(fake.calls) == 1
+
+
+async def test_truncated_text_completes_with_length() -> None:
+    fake = StreamFake([_text("partial answ", finish_reason="length")])
+
+    final = await _final(Agent(model=fake))
+
+    assert (final.answer, final.status) == ("partial answ", "completed")
+    assert final.finish_reason == "length"
+
+
+async def test_complete_tool_call_with_length_still_runs() -> None:
+    fake = StreamFake(
+        [_call("add", '{"a": 1, "b": 2}', finish_reason="length"), _text("3")]
+    )
+    session = Agent(model=fake, tools=[add]).start()
+
+    assert await session.run("go") == "3"
+    action = session.memory.steps[1]
+    assert isinstance(action, ActionStep)
+    assert action.tool_results[0].content == "3"
+
+
+async def test_truncation_on_the_forced_final_raises() -> None:
+    fake = StreamFake([_call("add", '{"a": 1, "b": 2}'), _truncated()])
+
+    with pytest.raises(ModelOutputTruncatedError):
+        await Agent(model=fake, tools=[add], max_steps=1).run("go")
+    assert len(fake.calls) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Malformed turns and the step limit
+# --------------------------------------------------------------------------- #
+async def test_malformed_turn_does_not_use_a_step() -> None:
+    fake = StreamFake([_malformed(), _text("ok")])
+
+    final = await _final(Agent(model=fake, tools=[add], max_steps=1))
+
+    assert (final.answer, final.status) == ("ok", "completed")
+    assert len(fake.calls) == 2
+
+
+async def test_malformed_turn_leaves_the_full_step_budget() -> None:
+    fake = StreamFake(
+        [
+            _malformed(),
+            _call("add", '{"a": 1, "b": 2}'),
+            _call("add", '{"a": 2, "b": 2}', call_id="c2"),
+            _text("forced"),
+        ]
+    )
+    session = Agent(model=fake, tools=[add], max_steps=2).start()
+
+    final = [event async for event in session.run("go", stream=True)][-1]
+
+    assert isinstance(final, FinalEvent)
+    assert final.status == "max_steps"
+    assert sum(isinstance(step, ActionStep) for step in session.memory.steps) == 2
+    assert len(fake.calls) == 4
+
+
+async def test_three_malformed_turns_in_a_row_still_raise() -> None:
+    fake = StreamFake([_malformed(), _malformed(), _malformed()])
+
+    with pytest.raises(ModelError, match="3 consecutive turns") as caught:
+        await Agent(model=fake, tools=[add]).run("go")
+
+    assert type(caught.value) is ModelError
+    assert len(fake.calls) == 3
+
+
 # --------------------------------------------------------------------------- #
 # provider_data must be JSON-serialisable
 # --------------------------------------------------------------------------- #
@@ -544,8 +752,9 @@ async def test_partial_usage_is_summed() -> None:
 
 
 async def test_interrupted_run_without_usage_reports_none() -> None:
-    session = Agent(model=StreamFake([_text("never")])).start()
-    session.interrupt()
+    model = _InterruptsFirstCall()
+    session = Agent(model=model).start()
+    model.session = session
 
     final = [event async for event in session.run("x", stream=True)][-1]
 

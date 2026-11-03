@@ -5,8 +5,9 @@ sessions. AgentSession holds one conversation's state (memory, interrupt flag,
 its own tool set) and runs the ReAct loop. One Agent can therefore serve many
 concurrent runs without their memory, interrupts or tools mixing.
 
-AgentSession._run_stream does the work and yields Events. run() returns that
-stream when stream=True, or drains it and returns the final answer.
+AgentSession._loop does the work and yields Events; _run_stream wraps it so a
+session runs one task at a time. run() and resume() return that stream when
+stream=True, or drain it and return the final answer.
 
 Only skill names and descriptions go into the system prompt. A skill's full
 instructions and tools arrive when the model calls load_skill.
@@ -24,15 +25,22 @@ from collections.abc import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Coroutine,
     Iterable,
     Sequence,
 )
 from contextlib import aclosing
 from dataclasses import replace
 from pathlib import Path
-from typing import Literal, overload
+from typing import Any, Literal, overload
 
-from .errors import ModelError, ModelOutputError, ModelTimeoutError, ToolTimeoutError
+from .errors import (
+    ModelError,
+    ModelOutputError,
+    ModelOutputTruncatedError,
+    ModelTimeoutError,
+    ToolTimeoutError,
+)
 from .events import (
     Event,
     FinalEvent,
@@ -72,7 +80,14 @@ _MAX_MALFORMED_RETRIES = 2
 # How often a retry wait checks for an interrupt.
 _INTERRUPT_POLL_SECONDS = 0.05
 
+_TRUNCATED_TOOL_CALL = (
+    "Model output was cut off by its length limit while writing a tool call."
+)
+
 logger = logging.getLogger("agentling")
+
+# Called with each ActionStep once it is recorded; async callbacks are awaited.
+StepCallback = Callable[[Step], Awaitable[None] | None]
 
 
 class Agent:
@@ -90,7 +105,7 @@ class Agent:
         skills: Sequence[Skill | str | Path] = (),
         instructions: str | None = None,
         max_steps: int = 15,
-        step_callbacks: Sequence[Callable[[Step], None]] = (),
+        step_callbacks: Sequence[StepCallback] = (),
         parallel_tools: bool = True,
         tool_timeout: float | None = None,
         model_timeout: float | None = None,
@@ -124,7 +139,8 @@ class Agent:
         # Trims or summarises the messages before each model call so long runs
         # fit the context window.
         self.context_manager = context_manager
-        # Each session copies these and may add its own.
+        # Each session copies these and may add its own. They run in order,
+        # before the step's StepEvent; one that raises stops the run.
         self.step_callbacks = list(step_callbacks)
 
         # Fail on a duplicate name rather than let one tool shadow another. Each
@@ -163,7 +179,7 @@ class Agent:
         stream: Literal[False] = False,
         reset: bool = True,
         max_steps: int | None = None,
-    ) -> Awaitable[str]: ...
+    ) -> Coroutine[Any, Any, str]: ...
 
     @overload
     def run(
@@ -173,7 +189,7 @@ class Agent:
         stream: Literal[True],
         reset: bool = True,
         max_steps: int | None = None,
-    ) -> AsyncIterator[Event]: ...
+    ) -> AsyncGenerator[Event, None]: ...
 
     def run(
         self,
@@ -182,7 +198,7 @@ class Agent:
         stream: bool = False,
         reset: bool = True,
         max_steps: int | None = None,
-    ) -> Awaitable[str] | AsyncIterator[Event]:
+    ) -> Coroutine[Any, Any, str] | AsyncGenerator[Event, None]:
         """Run a task on a new session and discard it.
 
         Concurrent calls each get their own session. For a multi-turn
@@ -208,6 +224,7 @@ class AgentSession:
         self.memory = Memory()
         self.step_callbacks = list(agent.step_callbacks)
         self._interrupt = asyncio.Event()
+        self._running = False
 
         self.tools: dict[str, Tool] = dict(agent._base_tools)
         if agent.skills:
@@ -272,6 +289,12 @@ class AgentSession:
         # A new list, so one already handed to the model is never mutated.
         self._tool_definitions = [t.definition for t in self.tools.values()]
 
+    @property
+    def is_running(self) -> bool:
+        """Whether a run or resume is in progress on this session."""
+
+        return self._running
+
     @overload
     def run(
         self,
@@ -280,7 +303,7 @@ class AgentSession:
         stream: Literal[False] = False,
         reset: bool = True,
         max_steps: int | None = None,
-    ) -> Awaitable[str]: ...
+    ) -> Coroutine[Any, Any, str]: ...
 
     @overload
     def run(
@@ -290,7 +313,7 @@ class AgentSession:
         stream: Literal[True],
         reset: bool = True,
         max_steps: int | None = None,
-    ) -> AsyncIterator[Event]: ...
+    ) -> AsyncGenerator[Event, None]: ...
 
     def run(
         self,
@@ -299,16 +322,45 @@ class AgentSession:
         stream: bool = False,
         reset: bool = True,
         max_steps: int | None = None,
-    ) -> Awaitable[str] | AsyncIterator[Event]:
+    ) -> Coroutine[Any, Any, str] | AsyncGenerator[Event, None]:
         """Run a task in this session.
 
         Returns an awaitable of the final answer, or with stream=True an async
-        iterator of Events. reset=False continues from the existing memory.
-        Raises a ModelError subclass if the model fails (after any retries),
-        times out, or keeps sending unparseable tool calls.
+        generator of Events. reset=False keeps the existing memory and adds the
+        task as a new user turn. Raises RuntimeError if the session is already
+        running, and a ModelError subclass if the model fails (after any
+        retries), times out, or keeps sending unparseable tool calls.
         """
 
         events = self._run_stream(task, reset=reset, max_steps=max_steps)
+        if stream:
+            return events
+        return self._drain(events)
+
+    @overload
+    def resume(
+        self, *, stream: Literal[False] = False, max_steps: int | None = None
+    ) -> Coroutine[Any, Any, str]: ...
+
+    @overload
+    def resume(
+        self, *, stream: Literal[True], max_steps: int | None = None
+    ) -> AsyncGenerator[Event, None]: ...
+
+    def resume(
+        self, *, stream: bool = False, max_steps: int | None = None
+    ) -> Coroutine[Any, Any, str] | AsyncGenerator[Event, None]:
+        """Continue an interrupted or failed run from memory, with no new task.
+
+        Same return types as run(); max_steps counts from this call. Raises
+        ValueError if memory is empty or already ends with a final answer.
+        """
+
+        steps = self.memory.steps
+        if not steps or isinstance(steps[-1], FinalStep):
+            raise ValueError("Nothing to resume")
+
+        events = self._run_stream(None, reset=False, max_steps=max_steps)
         if stream:
             return events
         return self._drain(events)
@@ -323,17 +375,46 @@ class AgentSession:
         return answer
 
     async def _run_stream(
-        self, task: str, *, reset: bool = True, max_steps: int | None = None
-    ) -> AsyncIterator[Event]:
-        """The core loop: drive the model/tool cycle, yielding Events."""
+        self, task: str | None, *, reset: bool, max_steps: int | None
+    ) -> AsyncGenerator[Event, None]:
+        """Run the loop, refusing to start while another run is in progress.
 
-        if reset:
-            self.memory.reset()
+        The flag is set on the first iteration rather than when run() is
+        called, so a stream that is never iterated never holds the session.
+        """
+
+        if self._running:
+            raise RuntimeError(
+                "Session is already running. If a previous run(..., stream=True) "
+                "was abandoned, close it with contextlib.aclosing."
+            )
+        self._running = True
+        try:
+            run = self._loop(task, reset=reset, max_steps=max_steps)
+            async with aclosing(run) as events:
+                async for event in events:
+                    yield event
+        finally:
+            self._running = False
+
+    async def _loop(
+        self, task: str | None, *, reset: bool, max_steps: int | None
+    ) -> AsyncGenerator[Event, None]:
+        """The core loop: drive the model/tool cycle, yielding Events.
+
+        A task of None resumes: memory is kept and no TaskStep is added.
+        """
+
+        # An interrupt requested while no run was active belongs to no run.
+        self._interrupt.clear()
 
         if max_steps is not None and max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
 
-        self.memory.add(TaskStep(task=task))
+        if task is not None:
+            if reset:
+                self.memory.reset()
+            self.memory.add(TaskStep(task=task))
 
         limit = self.agent.max_steps if max_steps is None else max_steps
 
@@ -346,8 +427,10 @@ class AgentSession:
         malformed_retries = 0
         # Stays None unless the model reports usage, so "unknown" isn't "zero".
         total_usage: Usage | None = None
+        # Only turns that parse count; a correction retry doesn't use a step.
+        taken = 0
 
-        for _ in range(limit):
+        while taken < limit:
             if self._interrupt.is_set():
                 yield self._interrupted(total_usage)
                 return
@@ -379,6 +462,9 @@ class AgentSession:
             try:
                 response = agglomerate_deltas(deltas)
             except ModelOutputError as exc:
+                # The model can't fix a call its output limit cut short.
+                if _hit_length_limit(deltas):
+                    raise ModelOutputTruncatedError(_TRUNCATED_TOOL_CALL) from exc
                 malformed_retries += 1
                 if malformed_retries > _MAX_MALFORMED_RETRIES:
                     raise ModelError(
@@ -402,6 +488,7 @@ class AgentSession:
             _check_provider_data(response)
             correction_notes.clear()
             malformed_retries = 0
+            taken += 1
             total_usage = _add_usage(total_usage, response.usage)
 
             # A reply with no tool calls is the answer.
@@ -421,8 +508,11 @@ class AgentSession:
             looping = signature == previous_signature
             previous_signature = signature
 
+            # final_answer is how a run ends, not a tool call to show. It is
+            # still recorded in the ActionStep so memory replays correctly.
             for tool_call in response.tool_calls:
-                yield ToolCallEvent(tool_call=tool_call)
+                if tool_call.name != "final_answer":
+                    yield ToolCallEvent(tool_call=tool_call)
 
             # One tool that isn't parallel_safe makes the whole step run in order.
             step_tools = [self.tools.get(tc.name) for tc in response.tool_calls]
@@ -441,7 +531,8 @@ class AgentSession:
                 results = [replace(r, content=r.content + _LOOP_NUDGE) for r in results]
 
             for result in results:
-                yield ToolResultEvent(result=result)
+                if result.name != "final_answer":
+                    yield ToolResultEvent(result=result)
 
             action = ActionStep(
                 model_message=response,
@@ -450,17 +541,19 @@ class AgentSession:
                 duration=time.monotonic() - started,
             )
             self.memory.add(action)
-            for callback in self.step_callbacks:
-                callback(action)
-            yield StepEvent(step=action)
-
-            # A successful final_answer call ends the run.
+            # A successful final_answer call ends the run. Its FinalStep is
+            # written before the callbacks run, so one that raises can't leave
+            # a finished run looking resumable.
             final = next(
                 (r for r in results if r.name == "final_answer" and not r.is_error),
                 None,
             )
             if final is not None:
                 self.memory.add(FinalStep(answer=final.content))
+            await self._notify(action)
+            yield StepEvent(step=action)
+
+            if final is not None:
                 yield FinalEvent(
                     answer=final.content,
                     usage=total_usage,
@@ -468,7 +561,12 @@ class AgentSession:
                 )
                 return
 
-        # Step limit reached: force one tool-free answer.
+        # Step limit reached: force one tool-free answer, unless interrupted
+        # during the last step.
+        if self._interrupt.is_set():
+            yield self._interrupted(total_usage)
+            return
+
         messages = self.memory.to_messages(self.agent.instructions)
         messages.append(
             ChatMessage(
@@ -495,6 +593,8 @@ class AgentSession:
         try:
             response = agglomerate_deltas(deltas)
         except ModelOutputError as exc:
+            if _hit_length_limit(deltas):
+                raise ModelOutputTruncatedError(_TRUNCATED_TOOL_CALL) from exc
             raise ModelError(
                 f"Model produced unparseable output on the forced final answer: {exc}"
             ) from exc
@@ -683,7 +783,7 @@ class AgentSession:
 
         Polls the flag instead of awaiting the Event: Event.wait() binds the
         Event to one event loop, and interrupt() must stay a plain flag that
-        is safe to set from any loop or thread.
+        works whichever loop or task sets it.
         """
 
         loop = asyncio.get_running_loop()
@@ -694,18 +794,25 @@ class AgentSession:
                 return
             await asyncio.sleep(min(remaining, _INTERRUPT_POLL_SECONDS))
 
-    def _interrupted(self, usage: Usage | None) -> FinalEvent:
-        """Clear the interrupt and build the event that ends the run."""
+    async def _notify(self, step: Step) -> None:
+        """Run the step callbacks in order, awaiting the async ones."""
 
-        self._interrupt.clear()
+        for callback in self.step_callbacks:
+            outcome = callback(step)
+            if inspect.isawaitable(outcome):
+                await outcome
+
+    def _interrupted(self, usage: Usage | None) -> FinalEvent:
+        """Build the event that ends an interrupted run."""
+
         return FinalEvent(answer="Run interrupted.", usage=usage, status="interrupted")
 
     def interrupt(self) -> None:
         """Ask the current run to stop at its next step, chunk or retry wait.
 
-        The run ends with a FinalEvent whose status is "interrupted". If no run
-        is active, the next run stops at its first step. Call
-        run(..., reset=False) on this session to carry on from its memory.
+        The run ends with a FinalEvent whose status is "interrupted", and
+        resume() carries on from where it stopped.
+        Has no effect when no run is active.
         """
 
         self._interrupt.set()
@@ -733,6 +840,13 @@ def _add_usage(total: Usage | None, usage: Usage | None) -> Usage | None:
     if usage is None:
         return total
     return usage if total is None else total + usage
+
+
+def _hit_length_limit(deltas: Sequence[Delta]) -> bool:
+    """Whether the turn's last finish_reason says it hit the output limit."""
+
+    reasons = [delta.finish_reason for delta in deltas if delta.finish_reason]
+    return bool(reasons) and reasons[-1] == "length"
 
 
 def _check_provider_data(message: ChatMessage) -> None:

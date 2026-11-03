@@ -6,7 +6,7 @@ under it are implementation detail and may be reorganized.
 
 from importlib.metadata import PackageNotFoundError, version
 
-from .agent import Agent, AgentSession
+from .agent import Agent, AgentSession, StepCallback
 from .errors import (
     AgentlingError,
     AgentRunError,
@@ -17,6 +17,7 @@ from .errors import (
     ModelContextLengthError,
     ModelError,
     ModelOutputError,
+    ModelOutputTruncatedError,
     ModelRateLimitError,
     ModelServerError,
     ModelTimeoutError,
@@ -59,6 +60,7 @@ __all__ = [
     # Core
     "Agent",
     "AgentSession",
+    "StepCallback",
     "Model",
     "RetryPolicy",
     "Skill",
@@ -77,6 +79,7 @@ __all__ = [
     "ModelBadRequestError",
     "ModelContextLengthError",
     "ModelOutputError",
+    "ModelOutputTruncatedError",
     "ToolCallError",
     "ToolExecutionError",
     "ToolTimeoutError",
