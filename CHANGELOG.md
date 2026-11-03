@@ -6,6 +6,10 @@ to follow [semantic versioning](https://semver.org/).
 
 ## [0.2.0] - Unreleased
 
+**Breaking: Agentling no longer ships a model provider.** Every removed or
+changed API is listed below, and [MIGRATING.md](MIGRATING.md) has the 0.1 code
+and its 0.2 replacement for each.
+
 Agentling no longer ships a model adapter or depends on `openai`. Any object
 with a `stream(messages, tools)` method that yields `Delta`s is a model, so an
 app can use OpenAI, Anthropic, Gemini or a local server through an adapter of
@@ -32,9 +36,6 @@ its own. `examples/providers/openai_chat.py` is one to copy.
   memory without adding the task again, and `AgentSession.is_running`.
 - `ModelOutputTruncatedError`, raised when the model's output limit cuts a tool
   call short. The loop no longer asks the model to fix such a call.
-- Step callbacks can be `async`. Callbacks run in order and are awaited before
-  the step's `StepEvent`. `StepCallback` is their type, and
-  `AgentSession.step_callbacks` is a `list[StepCallback]`.
 - `agentling.testing`, imported by that name: `ScriptedModel`, a model that
   replays scripted turns so an agent runs offline; `check_model`, which runs an
   adapter through a text turn and a tool turn and reports which contract rule
@@ -55,9 +56,12 @@ its own. `examples/providers/openai_chat.py` is one to copy.
 
 ### Changed
 
+- `Model.stream(messages, tools)` takes `tools: Sequence[ToolDefinition]`, and
+  it is the only method a model needs.
 - `model_timeout` bounds the wait for each streamed chunk, not the whole turn.
-- A tool call that arrives without an id gets one
-  (`agentling_call_<index>_<8 hex>`) instead of failing the turn.
+- `ToolCallDelta.id` is optional. A tool call that arrives without an id gets
+  one (`agentling_call_<index>_<8 hex>`) instead of failing the turn, and
+  `agglomerate_deltas` no longer raises on a missing id.
 - `ModelOutputError` is now a subclass of `ModelError`.
 - `FinalEvent.usage` is `None` when the model never reported usage, instead of
   zero counts.
@@ -70,11 +74,12 @@ its own. `examples/providers/openai_chat.py` is one to copy.
   step's `StepEvent` is followed by the `FinalEvent`. The call is still
   recorded in memory.
 - Turns whose tool calls can't be parsed no longer count towards `max_steps`.
+- Step callbacks can be `async`. Callbacks run in order and are awaited before
+  the step's `StepEvent`. `StepCallback` is their type, and
+  `AgentSession.step_callbacks` is a `list[StepCallback]`.
 - `run(..., stream=True)` is typed as an async generator, so it can be closed
   early with `contextlib.aclosing`, and `run()` without it as a coroutine, so
   it can be passed to `asyncio.create_task`.
-- The answer forced at the step limit goes through `context_manager`, retries
-  and interrupts like any other turn.
 - `Agent()` raises `TypeError` straight away for a model without a usable
   `stream` method.
 - Memory saves as format 2, which adds the new fields. Format 1 saves still
@@ -90,7 +95,7 @@ its own. `examples/providers/openai_chat.py` is one to copy.
 
 ### Removed
 
-- `OpenAIModel` and the `openai` dependency. The only runtime dependency is
+- `OpenAIModel`, with its `context_window`, and the `openai` dependency. The only runtime dependency is
   `pyyaml`.
 - `ToolSpec` and `Tool.to_schema()`; use `Tool.definition`.
 - `Model.generate`. `Model` has one method, `stream`, which takes
@@ -100,6 +105,8 @@ its own. `examples/providers/openai_chat.py` is one to copy.
 
 - A slow consumer of `run(stream=True)` no longer receives a `CancelledError`
   caused by `model_timeout`.
+- The answer forced at the step limit goes through `context_manager`, retries
+  and interrupts like any other turn. It used to skip `context_manager`.
 - Retries no longer stack. Agentling used to retry on top of the OpenAI SDK's
   own retries, up to nine attempts per request.
 - Interrupting a run mid-stream now closes the adapter's stream.
