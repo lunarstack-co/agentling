@@ -190,8 +190,8 @@ def _schema_for_type(python_type: Any) -> JsonSchema:
     origin = get_origin(python_type)
     args = get_args(python_type)
 
-    # Literal["c", "f"] becomes an enum. A JSON Schema "type" is included only
-    # when all literal values share the same primitive type.
+    # Literal["c", "f"] becomes an enum, typed only when every value has the
+    # same Python type.
     if origin is Literal:
         values = list(args)
         if not values:
@@ -213,8 +213,6 @@ def _schema_for_type(python_type: Any) -> JsonSchema:
 
         return {"type": "string"}
 
-    # list[str] becomes an array with typed items. Bare list becomes an array
-    # without item constraints.
     if origin is list:
         if args:
             return {
@@ -224,15 +222,12 @@ def _schema_for_type(python_type: Any) -> JsonSchema:
 
         return {"type": "array"}
 
-    # dict[...] is represented as an object without per-key constraints.
     if origin is dict:
         return {"type": "object"}
 
-    # For other generic aliases, fall back to the origin's base type.
     if origin is not None:
         return {"type": _JSON_TYPES.get(origin, "string")}
 
-    # Plain types: str, int, float, bool, list, dict, etc.
     return {"type": _JSON_TYPES.get(python_type, "string")}
 
 
@@ -360,7 +355,7 @@ def _check_tool(candidate: Tool) -> None:
 
 
 class _FunctionTool(Tool):
-    """Tool implementation backed by a plain Python function."""
+    """A Tool that wraps a plain function."""
 
     def __init__(self, func: Callable[..., Any]) -> None:
         summary, _ = _parse_docstring(func)
@@ -372,9 +367,8 @@ class _FunctionTool(Tool):
         _check_tool(self)
 
     async def forward(self, **kwargs: Any) -> Any:
-        # Async functions are awaited directly; a plain sync function runs in a
-        # worker thread so a blocking call (CPU or I/O) cannot stall the event
-        # loop, the stream, or other tools running in the same step.
+        # Sync functions run in a worker thread, so a blocking call can't stall
+        # the stream or the other tools in the step.
         if inspect.iscoroutinefunction(self._func):
             return await self._func(**kwargs)
         return await asyncio.to_thread(self._func, **kwargs)
@@ -406,9 +400,8 @@ def tool(
 
     The function name becomes the tool name, the docstring summary becomes the
     description, argument descriptions come from a Google-style Args section,
-    and type hints become a JSON Schema parameters object. Synchronous and
-    asynchronous functions are both supported; sync functions run in a worker
-    thread so they cannot block the event loop.
+    and type hints become a JSON Schema parameters object. The function may be
+    sync or async; sync functions run in a worker thread.
 
     Use it bare, or with metadata:
 

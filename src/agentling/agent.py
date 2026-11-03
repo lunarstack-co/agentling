@@ -93,9 +93,33 @@ StepCallback = Callable[[Step], Awaitable[None] | None]
 class Agent:
     """Configuration shared by every run, and a factory for sessions.
 
-    Holds the model, the base tools (final_answer is always added), the skills
-    and the run settings, but no per-run state. Call start() for a session, or
-    run() for a one-off run.
+    Holds no per-run state, so one Agent can serve many concurrent runs. Call
+    start() for a session, or run() for a one-off run.
+
+    Args:
+        model: Any object with an async-generator stream(messages, tools).
+        tools: Tools the model can call. final_answer is always added, and a
+            duplicate name raises ValueError.
+        skills: Skill objects, or paths to skill folders.
+        instructions: The system prompt. Defaults to DEFAULT_INSTRUCTIONS;
+            the skill catalog is appended to it.
+        max_steps: Model turns allowed before a forced, tool-free final
+            answer. Turns that fail to parse don't count.
+        step_callbacks: Called in order with each ActionStep before its
+            StepEvent; async ones are awaited, and one that raises stops the run.
+        parallel_tools: Run a step's tool calls concurrently, unless any of
+            them has parallel_safe=False.
+        tool_timeout: Seconds allowed per tool call, for tools that don't set
+            their own. None means no limit.
+        model_timeout: Seconds to wait for each streamed chunk, not the
+            whole turn. None means no limit.
+        max_tool_output_chars: Cap on each tool result, for tools that don't
+            set their own. The middle is cut.
+        redact_errors: Log tool exceptions instead of showing their message to
+            the model. ToolCallError messages are always shown.
+        context_manager: Called with the full message list before each model
+            call; the list it returns is what the model sees.
+        retry: How failed model turns are retried. None turns retries off.
     """
 
     def __init__(
@@ -130,17 +154,12 @@ class Agent:
         self.max_steps = max_steps
         self.parallel_tools = parallel_tools
         self.tool_timeout = tool_timeout
-        # Bounds the wait for each streamed chunk, not the whole turn.
         self.model_timeout = model_timeout
-        # None disables retries.
         self.retry = retry
         self.max_tool_output_chars = max_tool_output_chars
         self.redact_errors = redact_errors
-        # Trims or summarises the messages before each model call so long runs
-        # fit the context window.
         self.context_manager = context_manager
-        # Each session copies these and may add its own. They run in order,
-        # before the step's StepEvent; one that raises stops the run.
+        # Each session copies these and may add its own.
         self.step_callbacks = list(step_callbacks)
 
         # Fail on a duplicate name rather than let one tool shadow another. Each
@@ -201,7 +220,8 @@ class Agent:
     ) -> Coroutine[Any, Any, str] | AsyncGenerator[Event, None]:
         """Run a task on a new session and discard it.
 
-        Concurrent calls each get their own session. For a multi-turn
+        Returns what AgentSession.run() returns. Concurrent calls each get their
+        own session. For a multi-turn
         conversation, or to read the memory afterwards, use start().
         """
 

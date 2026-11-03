@@ -92,12 +92,11 @@ class FinalStep:
     answer: str
 
     def to_messages(self) -> list[ChatMessage]:
-        """Render as the assistant's final message (keeps multi-turn history whole)."""
+        """Render as the assistant's final message."""
 
         return [ChatMessage(role="assistant", content=self.answer)]
 
 
-# A run's history is a sequence of these three step kinds.
 Step = TaskStep | ActionStep | FinalStep
 
 
@@ -139,8 +138,7 @@ class Memory:
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dict, tagging each step with its kind."""
 
-        # asdict() drops the nested types; from_dict() rebuilds them using the
-        # "type" tag. "version" lets the format change later.
+        # asdict() loses the step classes; from_dict() rebuilds them from "type".
         return {
             "version": _MEMORY_VERSION,
             "steps": [
