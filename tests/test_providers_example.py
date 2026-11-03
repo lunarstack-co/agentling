@@ -429,6 +429,23 @@ async def test_request_body() -> None:
     ]
 
 
+async def test_extra_body_is_merged_last() -> None:
+    requests: list[httpx.Request] = []
+    transport = sse_transport([_choice({"content": "ok"})], requests=requests)
+    model = OpenAIChatModel(
+        "m",
+        api_key="k",
+        transport=transport,
+        extra_body={"temperature": 0, "stream_options": {"include_usage": False}},
+    )
+
+    await _collect(model)
+
+    body = json.loads(requests[0].content)
+    assert body["temperature"] == 0
+    assert body["stream_options"] == {"include_usage": False}
+
+
 async def test_runs_a_full_agent_turn() -> None:
     chunks = [_choice({"content": "42"}), _choice({}, finish_reason="stop")]
     assert await Agent(model=_model(sse_transport(chunks))).run("x") == "42"

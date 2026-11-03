@@ -11,8 +11,6 @@ and the model recovers from the unknown-tool observation.
 from __future__ import annotations
 
 import asyncio
-import json
-from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from agentling import (
@@ -20,13 +18,11 @@ from agentling import (
     Agent,
     AgentSession,
     ChatMessage,
-    Delta,
     Tool,
     ToolCall,
-    ToolCallDelta,
-    ToolDefinition,
     Usage,
 )
+from agentling.testing import ScriptedModel
 
 WEATHER_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -52,34 +48,6 @@ class JsonSchemaTool(Tool):
         units = kwargs.get("units") or "c"
         temperature = 18 if units == "c" else 64
         return f"{kwargs['city']}: {temperature}°{units.upper()}, light rain"
-
-
-class ScriptedModel:
-    """A deterministic offline model that replays fixed assistant turns."""
-
-    def __init__(self, turns: Sequence[ChatMessage]) -> None:
-        self._turns = list(turns)
-        self._index = 0
-
-    async def stream(
-        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition] = ()
-    ) -> AsyncIterator[Delta]:
-        turn = self._turns[self._index]
-        self._index += 1
-        if turn.content:
-            yield Delta(content=turn.content)
-        for index, call in enumerate(turn.tool_calls):
-            yield Delta(
-                tool_calls=[
-                    ToolCallDelta(
-                        index=index,
-                        id=call.id,
-                        name=call.name,
-                        arguments=json.dumps(call.arguments),
-                    )
-                ]
-            )
-        yield Delta(usage=turn.usage)
 
 
 def _assistant(

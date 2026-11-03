@@ -5,19 +5,25 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-A tiny async framework for reliable, observable tool-using agents: a clean
-ReAct loop, typed memory, streaming events, recoverable failures, and
-progressive-disclosure skills, in a codebase small enough to read in one
-sitting.
+A small agent engine for Python: the tool-calling loop, typed memory and
+streamed events, with any model you bring.
 
 > **Status: alpha (0.x).** The API may still change before 1.0.
 
-agentling is built around one idea: an agent is a loop that turns a model, some
-tools, and a memory of what happened into more actions, until it has an answer.
-Everything else (streaming, skills, self-healing, persistence) is a thin layer
-on top of that loop.
+agentling runs the loop at the centre of an agent: ask the model, run the tools
+it asks for, record what happened, and repeat until it has an answer. You bring
+the model (anything with a `stream()` method), the tools (plain functions) and
+whatever sits around the loop, such as a UI, approvals or a server. That outer
+layer is often called a harness; agentling is the engine inside it.
+
+What you get over writing the loop yourself: retries that never repeat a tool
+call, interrupt and resume, truncated output detected, tool errors fed back to
+the model instead of crashing the run, streamed events, typed memory you can
+save and reload, and a checker that proves a model adapter follows the
+contract.
 
 ```python
+# not executed: needs an OpenAI API key
 import asyncio
 
 from agentling import Agent, tool
@@ -56,6 +62,7 @@ asyncio.run(main())
   - [Memory and resuming a run](#memory-and-resuming-a-run)
   - [Interruption](#interruption)
   - [Models and other providers](#models-and-other-providers)
+  - [Write a model adapter](#write-a-model-adapter)
 - [Architecture](#architecture)
 - [Configuration reference](#configuration-reference)
 - [Development](#development)
@@ -63,8 +70,13 @@ asyncio.run(main())
 
 ## Why agentling
 
-- **Async first.** The loop, tools, and model calls are all `async`. Tool calls
-  in a single step run concurrently by default.
+- **Any model.** A model is any object with a `stream(messages, tools)` method.
+  agentling ships none; copy a reference adapter from
+  [`examples/providers/`](examples/providers/) or write your own.
+- **Testable.** `agentling.testing` has a scripted model for running agents
+  offline and a checker that tells you which contract rule an adapter broke.
+- **Concurrent tools.** Tool calls in a single step run concurrently by
+  default.
 - **One code path.** Blocking and streaming share the exact same loop. There is
   a single async generator; blocking mode just drains it.
 - **Typed memory.** A run is a list of typed steps, not a bag of raw messages.
@@ -75,8 +87,9 @@ asyncio.run(main())
   libraries stay cheap.
 - **Self-healing.** A tool that raises becomes an observation the model can
   recover from, not a crash.
-- **Small and readable.** No metaclasses, no plugin registry, no DSL. Around
-  800 lines of source you can actually read.
+- **Small and readable.** No metaclasses, no plugin registry, no DSL. The loop
+  is one file, [`agent.py`](src/agentling/agent.py), that you can read in a
+  sitting.
 
 ## Install
 
@@ -91,24 +104,25 @@ uv add agentling
 ```
 
 Requires Python 3.11 or newer. The only runtime dependency is `pyyaml` (for
-skill frontmatter). agentling ships no model adapter: copy the one in
-[`examples/providers/openai_chat.py`](examples/providers/openai_chat.py) into
-your app (it needs `httpx`), or write your own against the `Model` protocol.
-The snippets below import that example as it sits in this repository.
+skill frontmatter). agentling is async only: it runs inside your event loop, so
+call it from async code or with `asyncio.run`.
 
-Set your provider key in the environment:
-
-```bash
-export OPENAI_API_KEY="sk-..."
-```
+agentling ships no model adapter. The quickstart below needs no API key. To use
+a real model, copy one of the adapters in
+[`examples/providers/`](examples/providers/) into your app (they need `httpx`),
+or write your own against the `Model` protocol. Snippets in this README import
+those adapters as they sit in this repository.
 
 ## Quickstart
+
+This runs with no API key. `ScriptedModel` plays the model's part from a script:
+first it calls the `add` tool, then it answers.
 
 ```python
 import asyncio
 
-from agentling import Agent, tool
-from examples.providers.openai_chat import OpenAIChatModel
+from agentling import Agent, ChatMessage, ToolCall, tool
+from agentling.testing import ScriptedModel
 
 
 @tool
@@ -122,13 +136,30 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
+model = ScriptedModel(
+    [
+        ChatMessage("assistant", tool_calls=[ToolCall("c1", "add", {"a": 19, "b": 23})]),
+        ChatMessage("assistant", "19 + 23 = 42."),
+    ]
+)
+
+
 async def main() -> None:
-    agent = Agent(model=OpenAIChatModel("gpt-4o-mini"), tools=[add])
-    answer = await agent.run("What is 19 + 23, and why?")
-    print(answer)
+    agent = Agent(model=model, tools=[add])
+    print(await agent.run("What is 19 + 23?"))
 
 
 asyncio.run(main())
+```
+
+Swap `ScriptedModel` for a real adapter and nothing else changes. With the
+OpenAI-compatible adapter from [`examples/providers/`](examples/providers/):
+
+```python
+# not executed: needs an OpenAI API key
+from examples.providers.openai_chat import OpenAIChatModel
+
+agent = Agent(model=OpenAIChatModel("gpt-4o-mini"), tools=[add])  # reads OPENAI_API_KEY
 ```
 
 ## Examples
@@ -144,6 +175,7 @@ uv run python examples/cli_failure_recovery.py   # recover from tool errors
 uv run python examples/cli_memory_chat.py        # persist and continue a session
 uv run python examples/cli_advanced_observer.py  # watch every event type
 uv run python examples/cli_dynamic_tools.py      # add and remove tools on a live session
+uv run python examples/custom_model_generate_only.py  # a model whose backend can't stream
 ```
 
 Needs an API key:
@@ -168,7 +200,9 @@ What each one covers:
 | Timeouts, redaction, `parallel_safe` | `cli_notes_agent.py` |
 | `max_tool_output_chars` | `cli_repo_assistant.py` |
 | Tools from a JSON Schema, `add_tools` / `remove_tools` | `cli_dynamic_tools.py` |
-| Custom scripted/fake model | `cli_failure_recovery.py`, `cli_memory_chat.py` |
+| Offline runs with `ScriptedModel` | `cli_failure_recovery.py`, `cli_memory_chat.py` |
+| A backend that can't stream (`deltas_from_message`) | `custom_model_generate_only.py` |
+| Reference model adapters and fixtures | [`providers/`](examples/providers/) |
 
 ## Usage
 
@@ -223,12 +257,14 @@ end the run explicitly, or it can just reply with plain text (see
 Blocking mode returns the final answer:
 
 ```python
+# not executed: a fragment; `agent` and `session` come from earlier examples
 answer: str = await agent.run("Summarize this.")
 ```
 
 Streaming mode returns an async iterator of typed events:
 
 ```python
+# not executed: a fragment; `agent` and `session` come from earlier examples
 from agentling import FinalEvent, TextDelta, ToolCallEvent
 
 async for event in agent.run("Summarize this.", stream=True):
@@ -245,6 +281,7 @@ text as it arrives along with each tool call and result, and returns the final
 answer. It is the "streaming CLI" in about thirty lines:
 
 ```python
+# not executed: needs an OpenAI API key
 import asyncio
 
 from agentling import Agent, print_events, tool
@@ -296,6 +333,7 @@ and any tools the skill declares are registered. This keeps the base prompt
 small even with a large library of skills installed.
 
 ```python
+# not executed: needs an OpenAI API key
 import asyncio
 
 from agentling import Agent, tool
@@ -364,6 +402,7 @@ running")`; use a separate session for work that should run in parallel.
 whose run has already finished it raises `ValueError("Nothing to resume")`.
 
 ```python
+# not executed: a fragment; `agent` and `session` come from earlier examples
 # one-shot: simplest, and safe under concurrency
 answer = await agent.run("A single question")
 
@@ -379,6 +418,7 @@ Each session keeps a `Memory` of typed steps. You can serialize it and reload
 it later:
 
 ```python
+# not executed: a fragment; `agent` and `session` come from earlier examples
 session = agent.start()
 await session.run("First question")
 
@@ -394,6 +434,7 @@ memory and add the new task as the next user turn, which is how a multi-turn
 conversation works:
 
 ```python
+# not executed: a fragment; `agent` and `session` come from earlier examples
 session = agent.start()
 await session.run("First question")
 await session.run("A follow-up", reset=False)   # sees the earlier turn
@@ -410,6 +451,7 @@ crash: it stops at the next step, streamed chunk or retry wait, ends with a
 `session.resume()` to carry on from there without adding a new user turn.
 
 ```python
+# not executed: a fragment; `agent` and `session` come from earlier examples
 session = agent.start()
 job = asyncio.create_task(session.run("Long job"))
 await asyncio.sleep(0)            # let the run start: a real model suspends on its first request
@@ -433,6 +475,7 @@ If you stop iterating `run(..., stream=True)` early, close the stream so the
 session is free for its next run. `contextlib.aclosing` does that:
 
 ```python
+# not executed: a fragment; `agent` and `session` come from earlier examples
 from contextlib import aclosing
 
 async with aclosing(session.run(task, stream=True)) as events:
@@ -450,6 +493,7 @@ reports `is_running` and refuses another run.
 Any object with this method is a model:
 
 ```python
+# not executed: the shape of the protocol; see src/agentling/models.py
 class Model(Protocol):
     def stream(
         self,
@@ -459,12 +503,15 @@ class Model(Protocol):
 ```
 
 agentling ships no adapter of its own.
-[`examples/providers/openai_chat.py`](examples/providers/openai_chat.py) is a
-complete one for OpenAI and OpenAI-compatible servers (LM Studio, vLLM, Ollama's
-`/v1`, OpenRouter and others). Copy it into your app and point `base_url` at
-your endpoint:
+[`examples/providers/`](examples/providers/) has three to copy into your app:
+`openai_chat.py` for OpenAI and OpenAI-compatible servers (LM Studio, vLLM,
+Ollama's `/v1`, OpenRouter, Gemini's compatibility endpoint),
+`anthropic_messages.py` for Claude, and `ollama_native.py` for Ollama's own API.
+Point `base_url` at your endpoint:
 
 ```python
+from examples.providers.openai_chat import OpenAIChatModel
+
 model = OpenAIChatModel(
     "llama-3.1-70b",
     base_url="http://localhost:8000/v1",
@@ -472,11 +519,137 @@ model = OpenAIChatModel(
 )
 ```
 
-Adapters raise `ModelError` subclasses (`ModelRateLimitError`,
-`ModelAuthError`, and so on) and never retry. The loop retries a turn that
-fails before its first chunk when the error is retryable, under the agent's
-`RetryPolicy`; a bad request or bad auth fails at once. The seven rules an
-adapter must follow are in the `Model` docstring.
+Adapters raise `ModelError` subclasses and never retry; the loop does the
+retrying. [Write a model adapter](#write-a-model-adapter) covers the rest.
+
+### Write a model adapter
+
+An adapter is one class with one method. It turns agentling's messages into
+your backend's request, and your backend's response into `Delta`s. Start from
+the reference adapter closest to your backend:
+
+- [`openai_chat.py`](examples/providers/openai_chat.py): OpenAI chat
+  completions and every server that copies it. Handles usage via
+  `stream_options`, finish reasons, and tool calls with missing ids.
+- [`anthropic_messages.py`](examples/providers/anthropic_messages.py): the
+  Anthropic Messages API. Lifts the system prompt, groups tool results into
+  one user message, and replays thinking blocks through `provider_data`.
+- [`ollama_native.py`](examples/providers/ollama_native.py): Ollama's
+  `/api/chat`. Reads newline-delimited JSON, whole tool calls, and usage from
+  the final chunk.
+
+**What you yield.** Each `Delta` carries any of these, all optional:
+
+| Field | Meaning |
+| --- | --- |
+| `content` | A chunk of answer text. |
+| `reasoning` | A chunk of visible reasoning, kept apart from the answer. |
+| `tool_calls` | `ToolCallDelta` fragments, grouped by `index`. `id`, `name` and a piece of the JSON `arguments` may each arrive in a different fragment. A missing id is made up for you. |
+| `usage` | Token counts. The last one wins. |
+| `finish_reason` | One of `stop`, `tool_calls`, `length`, `content_filter`, `error`, `unknown`. |
+| `provider_data` | Data your adapter needs back on a later turn, under your own key. |
+
+**What you receive.** A list of `ChatMessage`s with a `role` (`system`,
+`user`, `assistant` or `tool`), `content`, and for assistant turns the
+`tool_calls`, `reasoning` and `provider_data` you produced earlier. A tool
+result carries the `tool_call_id` it answers. You also get the tools as
+`ToolDefinition`s: a `name`, a `description` and a JSON Schema `parameters`.
+
+**The rules.** These are the `Model` contract, checked by `check_model`:
+
+1. Yield no `Delta` until it carries content, reasoning, a tool-call
+   fragment, usage or a finish_reason. Swallow metadata-only chunks: the
+   loop only retries a turn that failed before its first Delta.
+2. Yield `usage` at least once when the backend reports it (the last one
+   wins), and none when it doesn't.
+3. Yield `finish_reason` exactly once, on or before the last Delta.
+4. Raise only `ModelError` subclasses, with `retryable` set correctly. Never
+   let a vendor or transport exception escape, and never retry yourself.
+5. Never mutate the `messages` or `tools` you were given.
+6. Render the system message and tool results however the backend requires
+   (a top-level parameter, grouped blocks, and so on).
+7. Read back only your own `provider_data` namespace and ignore the others.
+   Everything you put there must be JSON-serialisable. It is kept on
+   tool-calling turns, which are the ones sent back to you.
+
+**Errors.** Raise the class that says what went wrong. Its `retryable`
+default tells the loop whether trying again can help; pass `retry_after`
+when the backend says how long to wait.
+
+| Class | Raise it when | Retryable by default |
+| --- | --- | --- |
+| `ModelConnectionError` | The backend can't be reached: DNS, refused or dropped connection. | yes |
+| `ModelRateLimitError` | HTTP 429. Pass the `Retry-After` value as `retry_after`. | yes |
+| `ModelServerError` | HTTP 5xx, or the backend reports an overload. | yes |
+| `ModelTimeoutError` | The request timed out. The loop also raises it for `model_timeout`. | yes |
+| `ModelAuthError` | HTTP 401 or 403, or a backend's own "bad key" error. | no |
+| `ModelBadRequestError` | Any other 4xx: an unknown model, a bad field. | no |
+| `ModelContextLengthError` | The conversation no longer fits the context window. | no |
+| `ModelOutputError` | The output can't be used, such as `provider_data` that isn't JSON-serialisable. The loop raises it for unparseable tool calls. | no |
+| `ModelOutputTruncatedError` | Raised by the loop when the output limit cuts a tool call short. Adapters don't raise it. | no |
+
+How often and how long the loop retries is set by the agent's `RetryPolicy`;
+see the [configuration reference](#configuration-reference).
+
+**`provider_data`.** Put only what your adapter needs on a later turn, under
+one top-level key named after it (`{"anthropic": {...}}`), and read back only
+that key. Yield it once, on the last `Delta`. agentling stores it with the
+turn and never reads it.
+
+**Check your adapter.** `check_model` runs a text turn and a tool turn and
+reports each rule as passed, failed or skipped. With `live=True` it calls your
+backend for real. Here a `ScriptedModel` stands in for one:
+
+```python
+import asyncio
+
+from agentling import ChatMessage, ToolCall, Usage
+from agentling.testing import ScriptedModel, check_model
+
+turns = [
+    ChatMessage("assistant", "pong", usage=Usage(5, 1), finish_reason="stop"),
+    ChatMessage(
+        "assistant",
+        tool_calls=[ToolCall("c1", "echo", {"text": "ping"})],
+        usage=Usage(9, 4),
+        finish_reason="tool_calls",
+    ),
+]
+
+report = asyncio.run(check_model(lambda transport: ScriptedModel(turns), live=True))
+print(report)
+report.raise_for_failures()
+```
+
+For tests that run offline, record the backend once and replay it.
+`check_model` hands your factory an httpx transport that serves the recording:
+
+```python
+import asyncio
+
+from agentling.testing import check_model
+from examples.providers.openai_chat import OpenAIChatModel
+
+
+def build(transport):
+    return OpenAIChatModel("gpt-4o-mini", api_key="unused", transport=transport)
+
+
+report = asyncio.run(
+    check_model(build, recorded="examples/providers/fixtures/openai_chat.jsonl")
+)
+assert report.ok, report
+```
+
+`examples/providers/record.py` makes the recording, with API keys redacted:
+
+```bash
+uv run python -m examples.providers.record ollama_native \
+    --base-url http://localhost:11434 --model qwen3:8b --out my_fixture.jsonl
+```
+
+Recorded mode and `RecordingTransport` need `httpx`; `ScriptedModel` and live
+mode don't.
 
 ## Architecture
 
@@ -492,14 +665,17 @@ events, models; nothing depends on agent).
 | [`events.py`](src/agentling/events.py) | The streaming event types, the `Event` union, and the `print_events` renderer. |
 | [`errors.py`](src/agentling/errors.py) | The exception hierarchy: `AgentlingError` and its domain subclasses. |
 | [`skills.py`](src/agentling/skills.py) | The `Skill` dataclass, the `SKILL.md` loader (frontmatter plus body), and entry-point tool resolution. |
-| [`agent.py`](src/agentling/agent.py) | The `Agent` config/factory, the `AgentSession` that holds one run's state, and the ReAct loop that ties everything together. |
+| [`agent.py`](src/agentling/agent.py) | The `Agent` config/factory, the `AgentSession` that holds one run's state, and the loop that ties everything together. |
+| [`retry.py`](src/agentling/retry.py) | `RetryPolicy` and the delay calculation for retried model turns. |
+| [`testing.py`](src/agentling/testing.py) | `ScriptedModel`, `check_model` and the fixture recorder. Imported as `agentling.testing`. |
 
 ### The agent loop
 
-The whole framework hangs off a single async generator, `AgentSession._run_stream`.
-`run()` is a thin dispatcher: in streaming mode it hands back that generator; in
-blocking mode it drains the generator and returns the final answer. There is no
-second implementation to keep in sync.
+Everything hangs off a single async generator, `AgentSession._loop`, wrapped
+by `_run_stream` so a session runs one task at a time. `run()` is a thin
+dispatcher: in streaming mode it hands back that generator; in blocking mode it
+drains the generator and returns the final answer. There is no second
+implementation to keep in sync.
 
 ```
   run(task, stream=True)                run(task)  (stream=False)
@@ -538,7 +714,7 @@ asks for one last tool-free answer.
 
 ### Message and model layer
 
-Everything above the provider speaks in framework-neutral types, not vendor
+Everything above the provider speaks in provider-neutral types, not vendor
 payloads:
 
 - **`ChatMessage`** is the one message type used internally. It has a role,
@@ -551,8 +727,8 @@ payloads:
 
 A model adapter is the only place that knows a backend's wire format. It
 converts `ChatMessage` lists into the backend's messages on the way out and
-converts responses back into `Delta`s on the way in, so the rest of the
-framework never sees a provider-specific shape. Swapping providers means
+converts responses back into `Delta`s on the way in, so the rest of
+agentling never sees a provider-specific shape. Swapping providers means
 writing one adapter, not touching the loop.
 
 **Streaming and reassembly.** `Model.stream` yields `Delta` objects: small
@@ -726,6 +902,16 @@ instead (useful when tools share state or must not interleave).
 failed run from memory without a new task, with the same return types as
 `run()`. `session.is_running` is `True` while a run or resume is in progress.
 
+`agentling.testing` (import it by that name; it isn't re-exported from
+`agentling`):
+
+| Name | What it does |
+| --- | --- |
+| `ScriptedModel(turns)` | Replays one turn per `stream()` call: a `ChatMessage`, a list of `Delta`s, or an exception to raise. Records `calls` and `tools`. Raises `AssertionError("ScriptedModel has no more turns")` when the script runs out. |
+| `check_model(factory, *, recorded=None, live=False, expects_tool_calls=True)` | Runs an adapter through a text turn and a tool turn and returns a `ConformanceReport` with `ok`, `rules`, `turns` and `raise_for_failures()`. Needs exactly one of `recorded` (a fixture path) or `live=True`. |
+| `RecordingTransport(inner=None)` | An httpx transport that records each exchange, with API keys redacted. Needs `httpx`. |
+| `write_fixture(path, exchanges)`, `read_fixture(path)` | Save and load recorded exchanges, one JSON object per line. |
+
 ## Development
 
 The project uses [uv](https://docs.astral.sh/uv/) for environment and
@@ -734,9 +920,9 @@ dependency management.
 ```bash
 uv sync                                # install everything, including dev deps
 uv run pytest                          # run the test suite
-uv run ruff check src tests            # lint
-uv run ruff format --check src tests   # formatting (run `ruff format` to fix)
-uv run mypy src tests                  # type-check
+uv run ruff check src tests examples            # lint
+uv run ruff format --check src tests examples   # formatting (run `ruff format` to fix)
+uv run mypy src tests examples                  # type-check
 uv build                               # verify the package builds
 ```
 

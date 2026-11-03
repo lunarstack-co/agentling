@@ -57,6 +57,7 @@ class OpenAIChatModel:
         base_url: str = "https://api.openai.com/v1",
         timeout: float = 60.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         """Create the adapter.
 
@@ -68,6 +69,9 @@ class OpenAIChatModel:
             timeout: httpx timeout in seconds for connecting and each read.
             transport: An httpx transport to use instead of the network
                 (tests pass an httpx.MockTransport).
+            extra_body: Fields merged into every request body last, so they
+                win: sampling settings such as temperature, or a
+                server's own options.
         """
 
         self.model = model
@@ -77,6 +81,7 @@ class OpenAIChatModel:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.transport = transport
+        self.extra_body = dict(extra_body or {})
 
     async def stream(
         self,
@@ -96,7 +101,10 @@ class OpenAIChatModel:
                 async with client.stream(
                     "POST",
                     f"{self.base_url}/chat/completions",
-                    json=request_body(self.model, messages, tools),
+                    json={
+                        **request_body(self.model, messages, tools),
+                        **self.extra_body,
+                    },
                     headers=headers,
                 ) as response:
                     if response.status_code != 200:

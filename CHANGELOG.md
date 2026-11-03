@@ -35,9 +35,23 @@ its own. `examples/providers/openai_chat.py` is one to copy.
 - Step callbacks can be `async`. Callbacks run in order and are awaited before
   the step's `StepEvent`. `StepCallback` is their type, and
   `AgentSession.step_callbacks` is a `list[StepCallback]`.
-- A reference adapter for OpenAI-compatible endpoints in
-  `examples/providers/openai_chat.py`. It needs `httpx`, which agentling
-  itself doesn't depend on.
+- `agentling.testing`, imported by that name: `ScriptedModel`, a model that
+  replays scripted turns so an agent runs offline; `check_model`, which runs an
+  adapter through a text turn and a tool turn and reports which contract rule
+  it broke (`ConformanceReport`, `RuleResult`); and `RecordingTransport`,
+  `write_fixture` and `read_fixture` for recording a backend once and
+  replaying it in tests. Recorded mode needs `httpx`; the rest doesn't.
+- Reference adapters to copy, in `examples/providers/`: `openai_chat.py` for
+  OpenAI-compatible endpoints, `anthropic_messages.py` for the Anthropic
+  Messages API (thinking blocks are kept and replayed through
+  `provider_data`), and `ollama_native.py` for Ollama's `/api/chat`. Each takes
+  an `extra_body`, ships a fixture in `examples/providers/fixtures/` and passes
+  `check_model`. They need `httpx`, which agentling itself doesn't depend on.
+- `examples/providers/record.py`, which records an adapter against a live
+  backend into a fixture with API keys redacted.
+- `examples/custom_model_generate_only.py`, a model whose backend can't stream.
+- `MIGRATING.md`, with the 0.1 code and its 0.2 replacement for every removed
+  or changed API.
 
 ### Changed
 
@@ -65,6 +79,12 @@ its own. `examples/providers/openai_chat.py` is one to copy.
   `stream` method.
 - Memory saves as format 2, which adds the new fields. Format 1 saves still
   load, but 0.1.x can't read format 2.
+- The package describes itself as an agent engine: the loop, typed memory and
+  streamed events, with any model you bring. The README quickstart runs
+  offline on `ScriptedModel`, and every README code block is either run by the
+  test suite or marked with the reason it isn't.
+- The offline examples and the test suite use `agentling.testing.ScriptedModel`
+  instead of their own copies of a fake model.
 - The examples that need an API key run as
   `uv run python -m examples.cli_math_tutor` (and likewise for the others).
 
