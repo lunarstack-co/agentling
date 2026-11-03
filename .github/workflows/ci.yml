@@ -1,16 +1,15 @@
 name: CI
 
-# Run on every pull request, and on pushes to main (so merges are verified too).
+# Every PR, and pushes to main so merges are checked too.
 on:
   pull_request:
   push:
     branches: [main]
 
-# Only need read access to check out the code.
 permissions:
   contents: read
 
-# Cancel superseded runs for the same ref (e.g. new pushes to an open PR).
+# A new push to the same ref cancels the run it supersedes.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -21,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Match the versions in pyproject's classifiers (requires-python >=3.11).
+        # The versions in pyproject's classifiers.
         python-version: ["3.11", "3.12"]
 
     steps:

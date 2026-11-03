@@ -1,4 +1,4 @@
-# Releasing agentling
+# Releasing Agentling
 
 The pipeline is small: bump the version, validate, dry-run on TestPyPI, publish
 to PyPI, then tag and cut a GitHub release. Versions on PyPI and TestPyPI are
@@ -30,7 +30,7 @@ release. Keep it in step with the `CHANGELOG.md` entry:
 
 ```bash
 cat > /tmp/vX.Y.Z-notes.md <<'EOF'
-vX.Y.Z — <one-line theme>
+vX.Y.Z: <one-line theme>
 
 <short paragraph>
 
@@ -64,9 +64,9 @@ uv publish --publish-url https://test.pypi.org/legacy/
 ```
 
 Install it back in a throwaway environment. Install the dependencies from PyPI
-first, then agentling alone from TestPyPI. A single command with
+first, then Agentling alone from TestPyPI. A single command with
 `--extra-index-url` does not work: uv searches the extra index first and stops
-at the first index that has the package, so it finds an older agentling on
+at the first index that has the package, so it finds an older Agentling on
 PyPI. Installing in two steps also keeps dependencies off TestPyPI, where
 anyone can upload a package under any name.
 

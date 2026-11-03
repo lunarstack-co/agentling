@@ -1,6 +1,6 @@
 # Migrating from 0.1 to 0.2
 
-agentling 0.2 stops shipping a model provider. It defines the contract a model
+Agentling 0.2 stops shipping a model provider. It defines the contract a model
 must follow, and your app brings the model. Most apps change in two places:
 where they build the model, and anything that caught OpenAI's exceptions. The
 rest of this guide covers every removed or changed API, each with the 0.1 code
@@ -10,7 +10,7 @@ Saved sessions keep working: 0.2 loads memory saved by 0.1.
 
 ## OpenAIModel is gone
 
-agentling no longer imports or depends on `openai`. Copy the reference adapter
+Agentling no longer imports or depends on `openai`. Copy the reference adapter
 [`examples/providers/openai_chat.py`](examples/providers/openai_chat.py) into
 your app, or write an adapter for your backend (see the README's "Write a
 model adapter").
@@ -160,7 +160,7 @@ agent = Agent(model=model, retry=RetryPolicy(max_retries=3, base_delay=1.0))
 
 ## Tool call ids are optional
 
-Some servers (Ollama, LM Studio) send tool calls without ids. agentling 0.1
+Some servers (Ollama, LM Studio) send tool calls without ids. Agentling 0.1
 treated that as unparseable output; 0.2 makes one up. An adapter can leave
 `ToolCallDelta.id` as `None`.
 
