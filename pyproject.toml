@@ -1,6 +1,6 @@
 [project]
 name = "agentling"
-version = "0.1.1"
+version = "0.2.0"
 description = "A tiny async tool-calling agent framework"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "openai>=2.44.0",
     "pyyaml>=6.0",
 ]
 
@@ -56,4 +55,5 @@ dev = [
     "types-PyYAML>=6.0",
     "ruff>=0.9.0",
     "mypy>=1.14.0",
+    "httpx>=0.28",
 ]

@@ -15,15 +15,24 @@ instructions and tools arrive when the model calls load_skill.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Sequence,
+)
+from contextlib import aclosing
 from dataclasses import replace
 from pathlib import Path
 from typing import Literal, overload
 
-from .errors import ModelError, ModelOutputError, ToolTimeoutError
+from .errors import ModelError, ModelOutputError, ModelTimeoutError, ToolTimeoutError
 from .events import (
     Event,
     FinalEvent,
@@ -38,10 +47,11 @@ from .models import (
     Delta,
     Model,
     ToolCall,
-    ToolSpec,
+    ToolDefinition,
     Usage,
     agglomerate_deltas,
 )
+from .retry import DEFAULT_RETRY, RetryPolicy, retry_delay
 from .skills import Skill
 from .tools import FinalAnswerTool, Tool, ToolCallError, _check_tool, tool
 
@@ -58,6 +68,9 @@ _LOOP_NUDGE = (
 
 # How many consecutive unparseable model turns to tolerate before giving up.
 _MAX_MALFORMED_RETRIES = 2
+
+# How often a retry wait checks for an interrupt.
+_INTERRUPT_POLL_SECONDS = 0.05
 
 logger = logging.getLogger("agentling")
 
@@ -84,15 +97,28 @@ class Agent:
         max_tool_output_chars: int | None = None,
         redact_errors: bool = False,
         context_manager: Callable[[list[ChatMessage]], list[ChatMessage]] | None = None,
+        retry: RetryPolicy | None = DEFAULT_RETRY,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
+        # Catch a model name or an old-style object here, not on the first run.
+        stream = getattr(model, "stream", None)
+        if not callable(stream):
+            raise TypeError("model must have a callable stream(messages, tools) method")
+        if inspect.iscoroutinefunction(stream):
+            raise TypeError(
+                "model.stream must be an async generator (an async def that "
+                "yields Deltas), not a coroutine function"
+            )
 
         self.model = model
         self.max_steps = max_steps
         self.parallel_tools = parallel_tools
         self.tool_timeout = tool_timeout
+        # Bounds the wait for each streamed chunk, not the whole turn.
         self.model_timeout = model_timeout
+        # None disables retries.
+        self.retry = retry
         self.max_tool_output_chars = max_tool_output_chars
         self.redact_errors = redact_errors
         # Trims or summarises the messages before each model call so long runs
@@ -187,8 +213,8 @@ class AgentSession:
         if agent.skills:
             load_skill = self._build_load_skill_tool()
             self.tools[load_skill.name] = load_skill
-        self._tool_schemas: list[ToolSpec] = []
-        self._rebuild_schemas()
+        self._tool_definitions: list[ToolDefinition] = []
+        self._rebuild_definitions()
 
     def add_tools(self, tools: Iterable[Tool], *, replace: bool = False) -> None:
         """Add tools to this session, visible from the model's next call.
@@ -213,7 +239,7 @@ class AgentSession:
             return
         for new_tool in new_tools:
             self.tools[new_tool.name] = new_tool
-        self._rebuild_schemas()
+        self._rebuild_definitions()
 
     def remove_tools(self, names: Iterable[str]) -> None:
         """Remove tools from this session, from the model's next call.
@@ -235,16 +261,16 @@ class AgentSession:
             return
         for name in targets:
             del self.tools[name]
-        self._rebuild_schemas()
+        self._rebuild_definitions()
 
     def _reserved_names(self) -> frozenset[str]:
         if self.agent.skills:
             return frozenset({"final_answer", "load_skill"})
         return frozenset({"final_answer"})
 
-    def _rebuild_schemas(self) -> None:
+    def _rebuild_definitions(self) -> None:
         # A new list, so one already handed to the model is never mutated.
-        self._tool_schemas = [t.to_schema() for t in self.tools.values()]
+        self._tool_definitions = [t.definition for t in self.tools.values()]
 
     @overload
     def run(
@@ -278,8 +304,8 @@ class AgentSession:
 
         Returns an awaitable of the final answer, or with stream=True an async
         iterator of Events. reset=False continues from the existing memory.
-        Raises ModelError if the model times out or keeps sending unparseable
-        tool calls.
+        Raises a ModelError subclass if the model fails (after any retries),
+        times out, or keeps sending unparseable tool calls.
         """
 
         events = self._run_stream(task, reset=reset, max_steps=max_steps)
@@ -318,14 +344,12 @@ class AgentSession:
         # turn parses.
         correction_notes: list[ChatMessage] = []
         malformed_retries = 0
-        total_usage = Usage(0, 0)
+        # Stays None unless the model reports usage, so "unknown" isn't "zero".
+        total_usage: Usage | None = None
 
         for _ in range(limit):
             if self._interrupt.is_set():
-                self._interrupt.clear()
-                yield FinalEvent(
-                    answer="Run interrupted.", usage=total_usage, status="interrupted"
-                )
+                yield self._interrupted(total_usage)
                 return
 
             started = time.monotonic()
@@ -334,31 +358,20 @@ class AgentSession:
             if self.agent.context_manager is not None:
                 messages = self.agent.context_manager(messages)
 
-            # Checking the interrupt per chunk lets a long stream stop early;
-            # model_timeout bounds a turn that hangs.
+            # Checking the interrupt per chunk lets a long stream stop early.
             deltas: list[Delta] = []
-            interrupted = False
-            try:
-                async with asyncio.timeout(self.agent.model_timeout):
-                    async for delta in self.agent.model.stream(
-                        messages, tools=self._tool_schemas
-                    ):
-                        if delta.content:
-                            yield TextDelta(text=delta.content)
-                        deltas.append(delta)
-                        if self._interrupt.is_set():
-                            interrupted = True
-                            break
-            except TimeoutError as exc:
-                raise ModelError(
-                    f"Model stream exceeded the {self.agent.model_timeout}s timeout."
-                ) from exc
+            async with aclosing(
+                self._stream_turn(messages, self._tool_definitions)
+            ) as turn:
+                async for delta in turn:
+                    if delta.content:
+                        yield TextDelta(text=delta.content)
+                    deltas.append(delta)
+                    if self._interrupt.is_set():
+                        break
 
-            if interrupted:
-                self._interrupt.clear()
-                yield FinalEvent(
-                    answer="Run interrupted.", usage=total_usage, status="interrupted"
-                )
+            if self._interrupt.is_set():
+                yield self._interrupted(total_usage)
                 return
 
             # A malformed tool call gets a correction and another try, up to
@@ -384,15 +397,21 @@ class AgentSession:
                 )
                 continue
 
+            # An adapter bug, not something the model can fix, so it is raised
+            # rather than sent back as a correction.
+            _check_provider_data(response)
             correction_notes.clear()
             malformed_retries = 0
-            if response.usage is not None:
-                total_usage = total_usage + response.usage
+            total_usage = _add_usage(total_usage, response.usage)
 
             # A reply with no tool calls is the answer.
             if not response.tool_calls:
                 self.memory.add(FinalStep(answer=response.content))
-                yield FinalEvent(answer=response.content, usage=total_usage)
+                yield FinalEvent(
+                    answer=response.content,
+                    usage=total_usage,
+                    finish_reason=response.finish_reason,
+                )
                 return
 
             signature = tuple(
@@ -442,7 +461,11 @@ class AgentSession:
             )
             if final is not None:
                 self.memory.add(FinalStep(answer=final.content))
-                yield FinalEvent(answer=final.content, usage=total_usage)
+                yield FinalEvent(
+                    answer=final.content,
+                    usage=total_usage,
+                    finish_reason=response.finish_reason,
+                )
                 return
 
         # Step limit reached: force one tool-free answer.
@@ -453,18 +476,21 @@ class AgentSession:
                 content="Step limit reached. Give your best final answer now.",
             )
         )
+        if self.agent.context_manager is not None:
+            messages = self.agent.context_manager(messages)
 
         deltas = []
-        try:
-            async with asyncio.timeout(self.agent.model_timeout):
-                async for delta in self.agent.model.stream(messages):
-                    if delta.content:
-                        yield TextDelta(text=delta.content)
-                    deltas.append(delta)
-        except TimeoutError as exc:
-            raise ModelError(
-                f"Model stream exceeded the {self.agent.model_timeout}s timeout."
-            ) from exc
+        async with aclosing(self._stream_turn(messages, ())) as turn:
+            async for delta in turn:
+                if delta.content:
+                    yield TextDelta(text=delta.content)
+                deltas.append(delta)
+                if self._interrupt.is_set():
+                    break
+
+        if self._interrupt.is_set():
+            yield self._interrupted(total_usage)
+            return
 
         try:
             response = agglomerate_deltas(deltas)
@@ -473,10 +499,70 @@ class AgentSession:
                 f"Model produced unparseable output on the forced final answer: {exc}"
             ) from exc
 
-        if response.usage is not None:
-            total_usage = total_usage + response.usage
+        _check_provider_data(response)
+        total_usage = _add_usage(total_usage, response.usage)
         self.memory.add(FinalStep(answer=response.content))
-        yield FinalEvent(answer=response.content, usage=total_usage, status="max_steps")
+        yield FinalEvent(
+            answer=response.content,
+            usage=total_usage,
+            status="max_steps",
+            finish_reason=response.finish_reason,
+        )
+
+    async def _stream_turn(
+        self, messages: list[ChatMessage], tools: Sequence[ToolDefinition]
+    ) -> AsyncGenerator[Delta, None]:
+        """Stream one model turn, retrying it if it fails before any output.
+
+        model_timeout bounds the wait for each next Delta, never the time the
+        caller spends between them. A turn is retried, under the agent's
+        RetryPolicy, only when it raises a retryable ModelError before its first
+        Delta: once text has been shown, a retry would repeat it. An interrupt
+        during the wait between attempts ends the turn with no further attempt.
+        """
+
+        policy = self.agent.retry
+        attempt = 0
+        while True:
+            received = False
+            stream = aiter(self.agent.model.stream(messages, tools))
+            try:
+                while True:
+                    try:
+                        async with asyncio.timeout(self.agent.model_timeout):
+                            delta = await anext(stream)
+                    except StopAsyncIteration:
+                        return
+                    except TimeoutError as exc:
+                        raise ModelTimeoutError(
+                            f"Model sent nothing for {self.agent.model_timeout}s."
+                        ) from exc
+                    received = True
+                    # Outside the timeout, so a slow consumer is never charged.
+                    yield delta
+            except ModelError as exc:
+                if (
+                    received
+                    or not exc.retryable
+                    or policy is None
+                    or attempt >= policy.max_retries
+                ):
+                    raise
+                delay = retry_delay(policy, attempt, exc)
+                attempt += 1
+                if policy.on_retry is not None:
+                    outcome = policy.on_retry(attempt, policy.max_retries, exc, delay)
+                    if inspect.isawaitable(outcome):
+                        await outcome
+                await self._sleep_unless_interrupted(delay)
+                if self._interrupt.is_set():
+                    return
+            finally:
+                # Frees the adapter's connection when a timeout, retry or
+                # early stop abandons the stream.
+                aclose = getattr(stream, "aclose", None)
+                if aclose is not None:
+                    await aclose()
 
     async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
         """Run one tool call, turning any failure into an error observation."""
@@ -592,8 +678,30 @@ class AgentSession:
 
         return load_skill
 
+    async def _sleep_unless_interrupted(self, delay: float) -> None:
+        """Wait `delay` seconds, or less if the session is interrupted.
+
+        Polls the flag instead of awaiting the Event: Event.wait() binds the
+        Event to one event loop, and interrupt() must stay a plain flag that
+        is safe to set from any loop or thread.
+        """
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + delay
+        while not self._interrupt.is_set():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(remaining, _INTERRUPT_POLL_SECONDS))
+
+    def _interrupted(self, usage: Usage | None) -> FinalEvent:
+        """Clear the interrupt and build the event that ends the run."""
+
+        self._interrupt.clear()
+        return FinalEvent(answer="Run interrupted.", usage=usage, status="interrupted")
+
     def interrupt(self) -> None:
-        """Ask the current run to stop at the next step or streamed chunk.
+        """Ask the current run to stop at its next step, chunk or retry wait.
 
         The run ends with a FinalEvent whose status is "interrupted". If no run
         is active, the next run stops at its first step. Call
@@ -617,6 +725,27 @@ def _truncate_middle(text: str, limit: int) -> str:
         return text[:limit]
     omitted = len(text) - 2 * keep
     return f"{text[:keep]}\n... [{omitted} characters omitted] ...\n{text[-keep:]}"
+
+
+def _add_usage(total: Usage | None, usage: Usage | None) -> Usage | None:
+    """Add a turn's usage to the run total, keeping None until any is seen."""
+
+    if usage is None:
+        return total
+    return usage if total is None else total + usage
+
+
+def _check_provider_data(message: ChatMessage) -> None:
+    """Fail now if provider_data couldn't be saved with the memory later."""
+
+    if message.provider_data is None:
+        return
+    try:
+        json.dumps(message.provider_data)
+    except (TypeError, ValueError) as exc:
+        raise ModelOutputError(
+            f"provider_data is not JSON-serialisable: {exc}"
+        ) from exc
 
 
 def _as_skill(entry: Skill | str | Path) -> Skill:

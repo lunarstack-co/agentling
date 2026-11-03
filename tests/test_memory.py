@@ -1,7 +1,11 @@
 import json
+from collections.abc import AsyncIterator, Sequence
+from pathlib import Path
+from typing import Any
 
 import pytest
 
+from agentling.agent import Agent
 from agentling.errors import MemoryLoadError
 from agentling.memory import (
     ActionStep,
@@ -10,7 +14,7 @@ from agentling.memory import (
     TaskStep,
     ToolResult,
 )
-from agentling.models import ChatMessage, ToolCall, Usage
+from agentling.models import ChatMessage, Delta, ToolCall, ToolDefinition, Usage
 
 
 def _action_step() -> ActionStep:
@@ -185,3 +189,120 @@ def test_from_dict_rejects_unsupported_version() -> None:
 def test_from_dict_rejects_non_list_steps() -> None:
     with pytest.raises(MemoryLoadError, match="steps"):
         Memory.from_dict({"version": 1, "steps": "not a list"})
+
+
+# --------------------------------------------------------------------------- #
+# Format v2 and loading older saves
+# --------------------------------------------------------------------------- #
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+@pytest.fixture
+def memory_v1() -> dict[str, Any]:
+    """A memory saved by agentling 0.1.1, the format Aldwin has on disk."""
+    loaded: dict[str, Any] = json.loads(
+        (_FIXTURES / "memory_v1.json").read_text(encoding="utf-8")
+    )
+    return loaded
+
+
+def test_round_trip_keeps_the_new_fields() -> None:
+    memory = Memory(
+        steps=[
+            ActionStep(
+                model_message=ChatMessage(
+                    role="assistant",
+                    tool_calls=[ToolCall(id="c1", name="f", arguments={})],
+                    usage=Usage(1, 2, 3, 4),
+                    reasoning="r",
+                    finish_reason="tool_calls",
+                    provider_data={"x": {"sig": "abc"}},
+                ),
+                usage=Usage(1, 2, 3, 4),
+            )
+        ]
+    )
+
+    raw = memory.dump_json()
+
+    assert json.loads(raw)["version"] == 2
+    assert Memory.load_json(raw) == memory
+
+
+def test_v1_fixture_loads_with_new_fields_at_defaults(
+    memory_v1: dict[str, Any],
+) -> None:
+    memory = Memory.from_dict(memory_v1)
+
+    task, action, final = memory.steps
+    assert task == TaskStep(task="What's the weather in Paris?")
+    assert isinstance(action, ActionStep)
+    assert action.model_message.tool_calls[0].id == "call_1"
+    assert action.model_message.reasoning is None
+    assert action.model_message.finish_reason is None
+    assert action.model_message.provider_data is None
+    assert action.usage == Usage(12, 7)
+    assert final == FinalStep(answer="It is sunny in Paris.")
+
+
+async def test_v1_session_resumes_and_saves_as_v2(memory_v1: dict[str, Any]) -> None:
+    class _TextModel:
+        async def stream(
+            self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition] = ()
+        ) -> AsyncIterator[Delta]:
+            yield Delta(content="Still sunny.")
+
+    session = Agent(model=_TextModel()).start()
+    session.memory = Memory.from_dict(memory_v1)
+
+    assert await session.run("And now?", reset=False) == "Still sunny."
+
+    saved = json.loads(session.memory.dump_json())
+    assert saved["version"] == 2
+    assert [step["type"] for step in saved["steps"]] == [
+        "task",
+        "action",
+        "final",
+        "task",
+        "final",
+    ]
+
+
+def test_unknown_keys_are_ignored() -> None:
+    memory = Memory.from_dict(
+        {
+            "version": 2,
+            "steps": [{"type": "task", "data": {"task": "hi", "future_field": 1}}],
+        }
+    )
+    assert memory.steps == [TaskStep(task="hi")]
+
+
+def test_missing_required_field_raises() -> None:
+    message: dict[str, Any] = {
+        "content": "",
+        "tool_calls": [],
+        "tool_call_id": None,
+        "usage": None,
+    }
+    with pytest.raises(MemoryLoadError):
+        Memory.from_dict(
+            {
+                "version": 2,
+                "steps": [{"type": "action", "data": {"model_message": message}}],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"version": 3}, {}, {"version": "2"}, {"version": True}, {"version": 1.0}],
+)
+def test_bad_versions_raise(payload: dict[str, Any]) -> None:
+    with pytest.raises(MemoryLoadError, match="version"):
+        Memory.from_dict({**payload, "steps": []})
+
+
+def test_malformed_step_data_raises_memory_load_error() -> None:
+    with pytest.raises(MemoryLoadError):
+        Memory.from_dict({"version": 2, "steps": [{"type": "task", "data": "x"}]})

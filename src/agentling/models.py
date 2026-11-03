@@ -1,26 +1,35 @@
-"""Provider-neutral model layer and the OpenAI-compatible adapter.
+"""Provider-neutral message, tool and streaming types, and the Model protocol.
 
-This module defines the framework's message types (ChatMessage, ToolCall,
-Usage) and streaming types (Delta, ToolCallDelta), the Model protocol the agent
-loop depends on, and OpenAIModel: an async adapter for any OpenAI-compatible
-chat-completions endpoint, with retries, streaming, and token-usage capture.
+agentling ships no model adapters: an app passes any object with a matching
+stream() method, written for whichever backend it uses.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
+import secrets
 from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, cast
-
-import openai
+from typing import Any, Literal, Protocol
 
 from .errors import ModelOutputError
 
 Role = Literal["system", "user", "assistant", "tool"]
-ToolSpec = dict[str, Any]
-OpenAIMessage = dict[str, Any]
+
+# Adapters map their backend's stop reasons onto these, "unknown" for the rest.
+FinishReason = Literal[
+    "stop", "tool_calls", "length", "content_filter", "error", "unknown"
+]
+
+
+@dataclass(frozen=True)
+class ToolDefinition:
+    """What a model is told about a tool. Adapters render it in their wire format."""
+
+    name: str
+    description: str
+    # JSON Schema for the arguments object.
+    parameters: dict[str, Any]
 
 
 @dataclass
@@ -34,10 +43,10 @@ class ToolCall:
 
 @dataclass
 class ToolCallDelta:
-    """A piece of a streamed tool call.
+    """A piece of a streamed tool call, grouped with the others by `index`.
 
-    The arguments string usually arrives in several pieces. `index` says which
-    tool call a piece belongs to.
+    `id` may be missing (some local servers never send one); agentling then
+    makes one up.
     """
 
     index: int
@@ -53,6 +62,11 @@ class Delta:
     content: str | None = None
     tool_calls: list[ToolCallDelta] = field(default_factory=list)
     usage: Usage | None = None
+    reasoning: str | None = None
+    finish_reason: FinishReason | None = None
+    # Adapter-owned data to send back on later turns (for example thinking
+    # signatures), keyed by adapter namespace. Must be JSON-serialisable.
+    provider_data: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +75,9 @@ class Usage:
 
     input_tokens: int
     output_tokens: int
+    # Breakdowns some backends report; already included in the two totals.
+    cached_input_tokens: int = 0
+    reasoning_tokens: int = 0
 
     @property
     def total_tokens(self) -> int:
@@ -72,280 +89,77 @@ class Usage:
         return Usage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
+            cached_input_tokens=self.cached_input_tokens + other.cached_input_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
         )
 
 
 @dataclass
 class ChatMessage:
-    """A chat message in agentling's own format.
-
-    Model adapters convert it to and from their provider's format.
-    """
+    """A chat message in agentling's own format; adapters convert it."""
 
     role: Role
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_call_id: str | None = None
     usage: Usage | None = None
+    reasoning: str | None = None
+    finish_reason: FinishReason | None = None
+    provider_data: dict[str, Any] | None = None
 
 
 class Model(Protocol):
-    """Common interface implemented by all model providers."""
+    """The one method agentling needs from a model backend.
 
-    async def generate(
-        self,
-        messages: Sequence[ChatMessage],
-        tools: Sequence[ToolSpec] | None = None,
-    ) -> ChatMessage:
-        """Generate one assistant response for the conversation so far."""
-        ...
+    Write an adapter for your backend that follows these rules:
+
+    1. Yield no `Delta` until it carries content, reasoning, a tool-call
+       fragment, usage or a finish_reason. Swallow metadata-only chunks: the
+       loop only retries a turn that failed before its first Delta.
+    2. Yield `usage` at least once when the backend reports it (the last one
+       wins), and none when it doesn't.
+    3. Yield `finish_reason` exactly once, on or before the last Delta.
+    4. Raise only `ModelError` subclasses, with `retryable` set correctly. Never
+       let a vendor or transport exception escape, and never retry yourself.
+    5. Never mutate the `messages` or `tools` you were given.
+    6. Render the system message and tool results however the backend requires
+       (a top-level parameter, grouped blocks, and so on).
+    7. Read back only your own `provider_data` namespace and ignore the others.
+       Everything you put there must be JSON-serialisable. It is kept on
+       tool-calling turns, which are the ones sent back to you.
+    """
 
     def stream(
         self,
         messages: Sequence[ChatMessage],
-        tools: Sequence[ToolSpec] | None = None,
+        tools: Sequence[ToolDefinition] = (),
     ) -> AsyncIterator[Delta]:
         """Stream the assistant response as incremental deltas."""
         ...
 
 
-class OpenAIModel:
-    """Adapter for OpenAI and any OpenAI-compatible chat-completions endpoint.
+async def deltas_from_message(message: ChatMessage) -> AsyncIterator[Delta]:
+    """Yield a whole message as one Delta, for backends that don't stream.
 
-    Converts agentling's messages to the chat-completions format and the
-    responses back into ChatMessage and Delta.
+    In stream(): `async for delta in deltas_from_message(reply): yield delta`.
     """
 
-    def __init__(
-        self,
-        model: str,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        context_window: int = 128_000,
-        max_retries: int = 2,
-        retry_base_delay: float = 0.5,
-    ) -> None:
-        """Create an OpenAI model adapter.
-
-        Args:
-            model: OpenAI model name.
-            api_key: Optional API key. If omitted, the OpenAI SDK will use
-                its default environment-based configuration.
-            base_url: Optional custom base URL for OpenAI-compatible providers.
-            context_window: The model's context window in tokens. Stored for
-                callers; agentling itself doesn't read it.
-            max_retries: Number of retries after the initial request.
-            retry_base_delay: Initial backoff delay in seconds.
-        """
-
-        self.model = model
-        self.context_window = context_window
-        self.max_retries = max_retries
-        self.retry_base_delay = retry_base_delay
-        self.client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
-
-    async def generate(
-        self,
-        messages: Sequence[ChatMessage],
-        tools: Sequence[ToolSpec] | None = None,
-    ) -> ChatMessage:
-        """Generate a single assistant response."""
-
-        openai_messages = self._to_openai_messages(messages)
-
-        response = await self._create_with_retry(
-            model=self.model,
-            messages=cast(Any, openai_messages),
-            tools=cast(Any, tools) if tools else openai.omit,
-        )
-
-        message = response.choices[0].message
-
-        return ChatMessage(
-            role="assistant",
-            content=message.content or "",
-            tool_calls=self._from_openai_tool_calls(message.tool_calls),
-            usage=self._from_openai_usage(response.usage),
-        )
-
-    async def stream(
-        self,
-        messages: Sequence[ChatMessage],
-        tools: Sequence[ToolSpec] | None = None,
-    ) -> AsyncIterator[Delta]:
-        """Stream response chunks from the model as they are generated."""
-
-        openai_messages = self._to_openai_messages(messages)
-
-        openai_stream = await self._create_with_retry(
-            model=self.model,
-            messages=cast(Any, openai_messages),
-            tools=cast(Any, tools) if tools else openai.omit,
-            stream=True,
-            stream_options={"include_usage": True},
-        )
-
-        async for chunk in openai_stream:
-            delta = self._from_openai_chunk(chunk)
-            if delta is not None:
-                yield delta
-
-    async def _create_with_retry(self, **kwargs: Any) -> Any:
-        """Call the OpenAI chat-completions API, retrying transient failures.
-
-        Rate limits, connection and timeout errors, and 5xx responses are
-        retried with exponential backoff, then re-raised as the SDK's own error.
-        Other errors, such as a bad request or bad auth, are raised at once.
-        Only opening the request or stream is retried, not a failure mid-stream.
-        """
-
-        total_attempts = max(1, self.max_retries + 1)
-
-        for attempt in range(total_attempts):
-            try:
-                return await self.client.chat.completions.create(**kwargs)
-
-            except (
-                openai.RateLimitError,
-                openai.APIConnectionError,  # also covers APITimeoutError
-                openai.InternalServerError,
-            ):
-                if attempt == total_attempts - 1:
-                    raise
-
-                delay = self.retry_base_delay * (2**attempt)
-                await asyncio.sleep(delay)
-
-        raise RuntimeError("Unexpected retry loop exit.")
-
-    def _from_openai_chunk(self, chunk: Any) -> Delta | None:
-        """Convert a single OpenAI stream chunk into a framework Delta."""
-
-        usage = self._from_openai_usage(chunk.usage) if chunk.usage else None
-
-        # The final usage-only chunk (from stream_options) carries no choices.
-        if not chunk.choices:
-            return Delta(usage=usage) if usage else None
-
-        choice_delta = chunk.choices[0].delta
-
-        tool_calls = [
+    yield Delta(
+        content=message.content or None,
+        tool_calls=[
             ToolCallDelta(
-                index=tool_call.index,
-                id=tool_call.id,
-                name=tool_call.function.name if tool_call.function else None,
-                arguments=(
-                    tool_call.function.arguments if tool_call.function else None
-                ),
+                index=index,
+                id=call.id,
+                name=call.name,
+                arguments=json.dumps(call.arguments),
             )
-            for tool_call in (choice_delta.tool_calls or [])
-        ]
-
-        return Delta(
-            content=choice_delta.content,
-            tool_calls=tool_calls,
-            usage=usage,
-        )
-
-    def _to_openai_messages(
-        self,
-        messages: Sequence[ChatMessage],
-    ) -> list[OpenAIMessage]:
-        """Convert framework messages into OpenAI chat-completions messages."""
-
-        openai_messages: list[OpenAIMessage] = []
-
-        for message in messages:
-            match message.role:
-                case "system" | "user":
-                    openai_messages.append(
-                        {
-                            "role": message.role,
-                            "content": message.content,
-                        }
-                    )
-
-                case "assistant":
-                    openai_messages.append(self._to_openai_assistant_message(message))
-
-                case "tool":
-                    openai_messages.append(self._to_openai_tool_message(message))
-
-                case _:
-                    raise ValueError(f"Unsupported message role: {message.role!r}")
-
-        return openai_messages
-
-    def _to_openai_assistant_message(self, message: ChatMessage) -> OpenAIMessage:
-        """Convert an assistant message into OpenAI's expected format."""
-
-        openai_message: OpenAIMessage = {
-            "role": "assistant",
-            "content": message.content or None,
-        }
-
-        if message.tool_calls:
-            openai_message["tool_calls"] = [
-                self._to_openai_tool_call(tool_call) for tool_call in message.tool_calls
-            ]
-
-        return openai_message
-
-    def _to_openai_tool_message(self, message: ChatMessage) -> OpenAIMessage:
-        """Convert a tool-result message into OpenAI's expected format."""
-
-        if message.tool_call_id is None:
-            raise ValueError("Tool messages must include a tool_call_id.")
-
-        return {
-            "role": "tool",
-            "content": message.content,
-            "tool_call_id": message.tool_call_id,
-        }
-
-    def _to_openai_tool_call(self, tool_call: ToolCall) -> OpenAIMessage:
-        """Convert a framework tool call into OpenAI's tool-call format."""
-
-        return {
-            "id": tool_call.id,
-            "type": "function",
-            "function": {
-                "name": tool_call.name,
-                # OpenAI expects tool arguments as a JSON string.
-                "arguments": json.dumps(tool_call.arguments),
-            },
-        }
-
-    def _from_openai_usage(self, usage: Any | None) -> Usage:
-        """Convert OpenAI usage metadata into framework usage metadata."""
-
-        if usage is None:
-            return Usage(input_tokens=0, output_tokens=0)
-
-        return Usage(
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
-        )
-
-    def _from_openai_tool_calls(self, tool_calls: Any | None) -> list[ToolCall]:
-        """Convert OpenAI tool calls into framework tool calls."""
-
-        if not tool_calls:
-            return []
-
-        return [
-            ToolCall(
-                id=tool_call.id,
-                name=tool_call.function.name,
-                arguments=self._parse_tool_arguments(tool_call.function.arguments),
-            )
-            for tool_call in tool_calls
-        ]
-
-    def _parse_tool_arguments(self, arguments: str) -> dict[str, Any]:
-        """Parse tool arguments with the same rules as the streaming path."""
-
-        return parse_tool_arguments(arguments)
+            for index, call in enumerate(message.tool_calls)
+        ],
+        usage=message.usage,
+        reasoning=message.reasoning,
+        finish_reason=message.finish_reason,
+        provider_data=message.provider_data,
+    )
 
 
 @dataclass
@@ -358,11 +172,7 @@ class _ToolCallFragment:
 
 
 def parse_tool_arguments(arguments: str) -> dict[str, Any]:
-    """Parse and validate model-generated tool arguments.
-
-    Arguments must be a JSON object; anything else raises ModelOutputError.
-    The streaming and non-streaming paths both use this so they agree.
-    """
+    """Parse tool-call arguments; anything but a JSON object is ModelOutputError."""
 
     try:
         parsed = json.loads(arguments or "{}")
@@ -380,42 +190,48 @@ def parse_tool_arguments(arguments: str) -> dict[str, Any]:
 def agglomerate_deltas(deltas: Iterable[Delta]) -> ChatMessage:
     """Reassemble streamed deltas into a single ChatMessage.
 
-    Content fragments are concatenated. Tool-call fragments are merged by their
-    `index`: the id and name arrive once, while the arguments string streams in
-    pieces and must be concatenated before it can be parsed as JSON.
+    Content, reasoning and each tool call's arguments (grouped by `index`) are
+    concatenated. For usage, finish_reason and provider_data the last one wins.
     """
 
     content_parts: list[str] = []
+    reasoning_parts: list[str] = []
     fragments: dict[int, _ToolCallFragment] = {}
     usage: Usage | None = None
+    finish_reason: FinishReason | None = None
+    provider_data: dict[str, Any] | None = None
 
     for delta in deltas:
         if delta.content:
             content_parts.append(delta.content)
+        if delta.reasoning:
+            reasoning_parts.append(delta.reasoning)
 
         for tool_call in delta.tool_calls:
             fragment = fragments.setdefault(tool_call.index, _ToolCallFragment())
-            if tool_call.id is not None:
+            if tool_call.id:
                 fragment.id = tool_call.id
-            if tool_call.name is not None:
+            if tool_call.name:
                 fragment.name = tool_call.name
             if tool_call.arguments:
                 fragment.arguments += tool_call.arguments
 
         if delta.usage is not None:
             usage = delta.usage
+        if delta.finish_reason is not None:
+            finish_reason = delta.finish_reason
+        if delta.provider_data is not None:
+            provider_data = delta.provider_data
 
     tool_calls: list[ToolCall] = []
-    for _index, fragment in sorted(fragments.items()):
-        # The id pairs the call with its result message, so both it and the name
-        # are required.
-        if not fragment.id:
-            raise ModelOutputError("Streamed tool call is missing an id.")
+    for index, fragment in sorted(fragments.items()):
         if not fragment.name:
             raise ModelOutputError("Streamed tool call is missing a name.")
         tool_calls.append(
             ToolCall(
-                id=fragment.id,
+                # The id pairs the call with its result message, so a backend
+                # that sends none (or "") still needs one.
+                id=fragment.id or f"agentling_call_{index}_{secrets.token_hex(4)}",
                 name=fragment.name,
                 arguments=parse_tool_arguments(fragment.arguments),
             )
@@ -426,4 +242,7 @@ def agglomerate_deltas(deltas: Iterable[Delta]) -> ChatMessage:
         content="".join(content_parts),
         tool_calls=tool_calls,
         usage=usage,
+        reasoning="".join(reasoning_parts) if reasoning_parts else None,
+        finish_reason=finish_reason,
+        provider_data=provider_data,
     )

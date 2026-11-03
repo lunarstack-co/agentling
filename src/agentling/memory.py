@@ -3,19 +3,23 @@
 The loop records each turn as a TaskStep, ActionStep or FinalStep rather than as
 raw messages. Steps keep usage, timing and tool results, and render themselves
 into the messages the model sees. Memory holds the steps and saves to JSON.
+
+The saved format is versioned. Version 2 added fields to Usage and ChatMessage;
+version 1 saves still load, with the new fields at their defaults.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, ClassVar
 
 from .errors import MemoryLoadError
 from .models import ChatMessage, ToolCall, Usage
 
-# Serialization format version written by to_dict and checked by from_dict.
-_MEMORY_VERSION = 1
+# Serialization format version written by to_dict, and the ones from_dict reads.
+_MEMORY_VERSION = 2
+_READABLE_VERSIONS = (1, 2)
 
 
 @dataclass
@@ -79,7 +83,11 @@ class ActionStep:
 
 @dataclass
 class FinalStep:
-    """The terminal answer produced by the run."""
+    """The terminal answer produced by the run.
+
+    Only the answer text is kept. reasoning and provider_data from a text-only
+    final turn are not stored; tool-calling turns keep them on ActionStep.
+    """
 
     answer: str
 
@@ -145,16 +153,21 @@ class Memory:
     def from_dict(cls, data: dict[str, Any]) -> Memory:
         """Rebuild a Memory from to_dict() output.
 
-        Raises MemoryLoadError for an unknown version or a malformed payload.
+        Reads format versions 1 and 2. Keys a step doesn't define are ignored
+        and missing optional ones take their defaults. Raises MemoryLoadError
+        for an unknown version, an unknown step type, or a missing required
+        field.
         """
 
         if not isinstance(data, dict):
             raise MemoryLoadError("Serialized memory must be a JSON object.")
 
         version = data.get("version")
-        if version != _MEMORY_VERSION:
+        # type() rather than isinstance(): True == 1 and 1.0 == 1 in Python.
+        if type(version) is not int or version not in _READABLE_VERSIONS:
             raise MemoryLoadError(
-                f"Unsupported memory version {version!r} (expected {_MEMORY_VERSION})."
+                f"Unsupported memory version {version!r} "
+                f"(expected one of {_READABLE_VERSIONS})."
             )
 
         entries = data.get("steps", [])
@@ -163,7 +176,7 @@ class Memory:
 
         try:
             steps = [_step_from_dict(entry) for entry in entries]
-        except (KeyError, TypeError) as exc:
+        except (AttributeError, KeyError, TypeError) as exc:
             raise MemoryLoadError(f"Malformed memory step: {exc}") from exc
 
         return cls(steps=steps)
@@ -184,15 +197,30 @@ class Memory:
         return cls.from_dict(json.loads(raw))
 
 
+def _known(cls: type[Any], data: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the keys that are fields of the dataclass `cls`."""
+
+    names = {f.name for f in fields(cls)}
+    return {key: value for key, value in data.items() if key in names}
+
+
+def _usage_from_dict(d: dict[str, Any] | None) -> Usage | None:
+    """Reconstruct a Usage, or None when none was saved."""
+
+    return Usage(**_known(Usage, d)) if d else None
+
+
 def _chat_message_from_dict(d: dict[str, Any]) -> ChatMessage:
     """Reconstruct a ChatMessage (and its nested ToolCalls/Usage) from a dict."""
 
     return ChatMessage(
-        role=d["role"],
-        content=d["content"],
-        tool_calls=[ToolCall(**tc) for tc in d["tool_calls"]],
-        tool_call_id=d["tool_call_id"],
-        usage=Usage(**d["usage"]) if d["usage"] else None,
+        **{
+            **_known(ChatMessage, d),
+            "tool_calls": [
+                ToolCall(**_known(ToolCall, tc)) for tc in d.get("tool_calls", [])
+            ],
+            "usage": _usage_from_dict(d.get("usage")),
+        }
     )
 
 
@@ -202,16 +230,20 @@ def _step_from_dict(entry: dict[str, Any]) -> Step:
     kind, data = entry["type"], entry["data"]
 
     if kind == "task":
-        return TaskStep(**data)
+        return TaskStep(**_known(TaskStep, data))
     if kind == "final":
-        return FinalStep(**data)
+        return FinalStep(**_known(FinalStep, data))
     if kind == "action":
         return ActionStep(
-            model_message=_chat_message_from_dict(data["model_message"]),
-            tool_results=[ToolResult(**tr) for tr in data["tool_results"]],
-            error=data["error"],
-            usage=Usage(**data["usage"]) if data["usage"] else None,
-            duration=data["duration"],
+            **{
+                **_known(ActionStep, data),
+                "model_message": _chat_message_from_dict(data["model_message"]),
+                "tool_results": [
+                    ToolResult(**_known(ToolResult, tr))
+                    for tr in data.get("tool_results", [])
+                ],
+                "usage": _usage_from_dict(data.get("usage")),
+            }
         )
 
     raise MemoryLoadError(f"Unknown step type: {kind!r}")

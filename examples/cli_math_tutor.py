@@ -3,7 +3,7 @@
 Needs an OpenAI-compatible API key (set OPENAI_API_KEY). The model name can be
 overridden with AGENTLING_EXAMPLE_MODEL:
 
-    uv run python examples/cli_math_tutor.py
+    uv run python -m examples.cli_math_tutor
 
 build_agent() accepts an optional model so tests can inject a fake one and run
 without any network access.
@@ -14,7 +14,8 @@ from __future__ import annotations
 import asyncio
 import os
 
-from agentling import Agent, Model, OpenAIModel, tool
+from agentling import Agent, Model, tool
+from examples.providers.openai_chat import OpenAIChatModel
 
 
 @tool
@@ -44,7 +45,7 @@ def build_agent(model: Model | None = None) -> Agent:
 
     return Agent(
         model=model
-        or OpenAIModel(os.environ.get("AGENTLING_EXAMPLE_MODEL", "gpt-4o-mini")),
+        or OpenAIChatModel(os.environ.get("AGENTLING_EXAMPLE_MODEL", "gpt-4o-mini")),
         tools=[add, multiply],
         instructions=(
             "You are a patient math tutor. Use the tools to compute, then "

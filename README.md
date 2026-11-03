@@ -20,7 +20,8 @@ on top of that loop.
 ```python
 import asyncio
 
-from agentling import Agent, OpenAIModel, tool
+from agentling import Agent, tool
+from examples.providers.openai_chat import OpenAIChatModel
 
 
 @tool
@@ -34,7 +35,7 @@ def get_weather(city: str) -> str:
 
 
 async def main() -> None:
-    agent = Agent(model=OpenAIModel("gpt-4o-mini"), tools=[get_weather])
+    agent = Agent(model=OpenAIChatModel("gpt-4o-mini"), tools=[get_weather])
     print(await agent.run("What's the weather in Paris?"))
 
 
@@ -89,9 +90,11 @@ Or with [uv](https://docs.astral.sh/uv/):
 uv add agentling
 ```
 
-Requires Python 3.11 or newer. The only runtime dependencies are `openai` (the
-client used by the built-in provider adapter) and `pyyaml` (for skill
-frontmatter).
+Requires Python 3.11 or newer. The only runtime dependency is `pyyaml` (for
+skill frontmatter). agentling ships no model adapter: copy the one in
+[`examples/providers/openai_chat.py`](examples/providers/openai_chat.py) into
+your app (it needs `httpx`), or write your own against the `Model` protocol.
+The snippets below import that example as it sits in this repository.
 
 Set your provider key in the environment:
 
@@ -104,7 +107,8 @@ export OPENAI_API_KEY="sk-..."
 ```python
 import asyncio
 
-from agentling import Agent, OpenAIModel, tool
+from agentling import Agent, tool
+from examples.providers.openai_chat import OpenAIChatModel
 
 
 @tool
@@ -119,7 +123,7 @@ def add(a: int, b: int) -> int:
 
 
 async def main() -> None:
-    agent = Agent(model=OpenAIModel("gpt-4o-mini"), tools=[add])
+    agent = Agent(model=OpenAIChatModel("gpt-4o-mini"), tools=[add])
     answer = await agent.run("What is 19 + 23, and why?")
     print(answer)
 
@@ -145,9 +149,9 @@ uv run python examples/cli_dynamic_tools.py      # add and remove tools on a liv
 Needs an API key:
 
 ```bash
-uv run python examples/cli_math_tutor.py               # smallest useful agent
-uv run python examples/cli_repo_assistant.py "..."     # streaming + safe file tools
-uv run python examples/cli_notes_agent.py              # file-backed notes tools
+uv run python -m examples.cli_math_tutor               # smallest useful agent
+uv run python -m examples.cli_repo_assistant "..."     # streaming + safe file tools
+uv run python -m examples.cli_notes_agent              # file-backed notes tools
 ```
 
 What each one covers:
@@ -243,7 +247,8 @@ answer. It is the "streaming CLI" in about thirty lines:
 ```python
 import asyncio
 
-from agentling import Agent, OpenAIModel, print_events, tool
+from agentling import Agent, print_events, tool
+from examples.providers.openai_chat import OpenAIChatModel
 
 
 @tool
@@ -258,7 +263,7 @@ def add(a: int, b: int) -> int:
 
 
 async def main() -> None:
-    agent = Agent(model=OpenAIModel("gpt-4o-mini"), tools=[add])
+    agent = Agent(model=OpenAIChatModel("gpt-4o-mini"), tools=[add])
     answer = await print_events(agent.run("What is 19 + 23?", stream=True))
     print("\nFinal answer:", answer)
 
@@ -293,7 +298,8 @@ small even with a large library of skills installed.
 ```python
 import asyncio
 
-from agentling import Agent, OpenAIModel, tool
+from agentling import Agent, tool
+from examples.providers.openai_chat import OpenAIChatModel
 
 
 @tool
@@ -309,7 +315,7 @@ def read_file(path: str) -> str:
 
 async def main() -> None:
     agent = Agent(
-        model=OpenAIModel("gpt-4o-mini"),
+        model=OpenAIChatModel("gpt-4o-mini"),
         tools=[read_file],
         skills=["examples/skills/code-reviewer"],
     )
@@ -403,32 +409,36 @@ await session.run(task, reset=False)   # picks up where it left off
 
 ### Models and other providers
 
-`OpenAIModel` is an adapter for any OpenAI-compatible chat-completions endpoint.
-Point it at a different `base_url` to use a compatible provider (a local server,
-a gateway, or another vendor's OpenAI-compatible API):
+Any object with this method is a model:
 
 ```python
-from agentling import OpenAIModel
+class Model(Protocol):
+    def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition] = (),
+    ) -> AsyncIterator[Delta]: ...
+```
 
-model = OpenAIModel(
+agentling ships no adapter of its own.
+[`examples/providers/openai_chat.py`](examples/providers/openai_chat.py) is a
+complete one for OpenAI and OpenAI-compatible servers (LM Studio, vLLM, Ollama's
+`/v1`, OpenRouter and others). Copy it into your app and point `base_url` at
+your endpoint:
+
+```python
+model = OpenAIChatModel(
     "llama-3.1-70b",
     base_url="http://localhost:8000/v1",
     api_key="not-needed-locally",
 )
 ```
 
-Transient failures (rate limits, connection or timeout errors, 5xx responses)
-are retried with exponential backoff. Permanent errors (a bad request, bad auth)
-fail fast without retrying.
-
-Any object implementing the `Model` protocol works, so you can write your own
-adapter:
-
-```python
-class Model(Protocol):
-    async def generate(self, messages, tools=None) -> ChatMessage: ...
-    def stream(self, messages, tools=None) -> AsyncIterator[Delta]: ...
-```
+Adapters raise `ModelError` subclasses (`ModelRateLimitError`,
+`ModelAuthError`, and so on) and never retry. The loop retries a turn that
+fails before its first chunk when the error is retryable, under the agent's
+`RetryPolicy`; a bad request or bad auth fails at once. The seven rules an
+adapter must follow are in the `Model` docstring.
 
 ## Architecture
 
@@ -438,7 +448,7 @@ events, models; nothing depends on agent).
 
 | Module | Responsibility |
 | --- | --- |
-| [`models.py`](src/agentling/models.py) | Provider-neutral message types (`ChatMessage`, `ToolCall`, `Usage`), streaming types (`Delta`, `ToolCallDelta`), the `Model` protocol, and the `OpenAIModel` adapter. |
+| [`models.py`](src/agentling/models.py) | Provider-neutral message types (`ChatMessage`, `ToolCall`, `Usage`), streaming types (`Delta`, `ToolCallDelta`), the `ToolDefinition` handed to models, and the `Model` protocol. |
 | [`tools.py`](src/agentling/tools.py) | The `Tool` abstraction, the `@tool` decorator, JSON Schema generation from function signatures, argument validation, and the built-in `final_answer` tool. |
 | [`memory.py`](src/agentling/memory.py) | Typed steps (`TaskStep`, `ActionStep`, `FinalStep`), the `Memory` container, rendering to model messages, and JSON serialization. |
 | [`events.py`](src/agentling/events.py) | The streaming event types, the `Event` union, and the `print_events` renderer. |
@@ -497,13 +507,14 @@ payloads:
   optional usage.
 - **`ToolCall`** is a provider-neutral tool call: an id, a name, and a parsed
   arguments dict.
-- **`Usage`** is input and output token counts, with a `total_tokens` property.
+- **`Usage`** is input and output token counts (plus cached and reasoning
+  breakdowns when the backend reports them), with a `total_tokens` property.
 
-`OpenAIModel` is the only place that knows OpenAI's wire format. It converts
-`ChatMessage` lists into OpenAI messages on the way out and converts responses
-back into `ChatMessage` on the way in, so the rest of the framework never sees a
-provider-specific shape. Swapping providers means writing one adapter, not
-touching the loop.
+A model adapter is the only place that knows a backend's wire format. It
+converts `ChatMessage` lists into the backend's messages on the way out and
+converts responses back into `Delta`s on the way in, so the rest of the
+framework never sees a provider-specific shape. Swapping providers means
+writing one adapter, not touching the loop.
 
 **Streaming and reassembly.** `Model.stream` yields `Delta` objects: small
 chunks of content or fragments of a tool call. Tool-call arguments in particular
@@ -628,21 +639,21 @@ instead (useful when tools share state or must not interleave).
 | `step_callbacks` | `()` | Callables invoked with each `ActionStep` as it is recorded. |
 | `parallel_tools` | `True` | Run a turn's tool calls concurrently, or in order when `False`. |
 | `tool_timeout` | `None` | Per-call time budget (seconds) for tools; a timeout becomes a recoverable observation. |
-| `model_timeout` | `None` | Time budget (seconds) for each model turn; exceeding it raises `ModelError`. |
+| `model_timeout` | `None` | Longest wait (seconds) for each streamed chunk; exceeding it raises `ModelTimeoutError`, retried if nothing had arrived yet. |
 | `max_tool_output_chars` | `None` | Truncate tool observations head and tail beyond this length. |
 | `redact_errors` | `False` | Hide unexpected tool-exception messages from the model and log them instead. |
 | `context_manager` | `None` | Callable `messages -> messages` applied before each model call, to trim or summarize. |
+| `retry` | `RetryPolicy()` | How to retry a model turn that fails before its first chunk; `None` disables retries. |
 
-`OpenAIModel(...)`:
+`RetryPolicy(...)`:
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `model` | required | The model name to request. |
-| `api_key` | env | Falls back to the OpenAI SDK's environment configuration. |
-| `base_url` | `None` | Point at any OpenAI-compatible endpoint. |
-| `context_window` | `128_000` | Advertised context window for this model. |
-| `max_retries` | `2` | Retries after the initial request for transient errors. |
-| `retry_base_delay` | `0.5` | Initial backoff delay in seconds (doubles each retry). |
+| `max_retries` | `2` | Retries after the first attempt. |
+| `base_delay` | `0.5` | First delay in seconds; doubles each retry unless the backend sent `retry_after`. |
+| `max_delay` | `30.0` | Cap on any single delay, including a backend's `retry_after`. |
+| `jitter` | `0.2` | Each delay is scaled by a random factor in `[1 - jitter, 1 + jitter]`. |
+| `on_retry` | `None` | Called with `(attempt, max_retries, error, delay)` before each wait; awaited if it returns an awaitable. |
 
 `agent.run(task, *, stream=False, reset=True, max_steps=None)`:
 

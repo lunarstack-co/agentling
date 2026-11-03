@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "type": "task",
+      "data": {
+        "task": "What's the weather in Paris?"
+      }
+    },
+    {
+      "type": "action",
+      "data": {
+        "model_message": {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "name": "get_weather",
+              "arguments": {
+                "city": "Paris"
+              }
+            }
+          ],
+          "tool_call_id": null,
+          "usage": {
+            "input_tokens": 12,
+            "output_tokens": 7
+          }
+        },
+        "tool_results": [
+          {
+            "tool_call_id": "call_1",
+            "name": "get_weather",
+            "content": "Sunny in Paris",
+            "is_error": false,
+            "error_kind": null
+          }
+        ],
+        "error": null,
+        "usage": {
+          "input_tokens": 12,
+          "output_tokens": 7
+        },
+        "duration": 0.0012475419789552689
+      }
+    },
+    {
+      "type": "final",
+      "data": {
+        "answer": "It is sunny in Paris."
+      }
+    }
+  ]
+}

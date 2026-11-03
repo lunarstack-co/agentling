@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import IO, Literal
 
 from .memory import Step, ToolResult
-from .models import ToolCall, Usage
+from .models import FinishReason, ToolCall, Usage
 
 RunStatus = Literal["completed", "interrupted", "max_steps"]
 
@@ -57,11 +57,14 @@ class FinalEvent:
 
     status is "completed" (the model finished), "interrupted" (a caller
     interrupted it) or "max_steps" (the step limit forced a final answer).
+    usage is the run's total, or None if the model never reported any.
+    finish_reason is why the last model turn stopped, when the adapter said.
     """
 
     answer: str
     usage: Usage | None = None
     status: RunStatus = "completed"
+    finish_reason: FinishReason | None = None
 
 
 Event = TextDelta | ToolCallEvent | ToolResultEvent | StepEvent | FinalEvent

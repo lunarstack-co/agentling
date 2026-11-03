@@ -2,7 +2,7 @@
 
 Needs an OpenAI-compatible API key (set OPENAI_API_KEY):
 
-    uv run python examples/cli_repo_assistant.py "Summarize the README"
+    uv run python -m examples.cli_repo_assistant "Summarize the README"
 
 Demonstrates streaming with print_events, file tools sandboxed to a project
 root, an output cap (max_tool_output_chars), and loading the bundled
@@ -16,7 +16,8 @@ import os
 import sys
 from pathlib import Path
 
-from agentling import Agent, Model, OpenAIModel, ToolCallError, print_events, tool
+from agentling import Agent, Model, ToolCallError, print_events, tool
+from examples.providers.openai_chat import OpenAIChatModel
 
 
 def _resolve_within(base: Path, candidate: str) -> Path:
@@ -54,7 +55,7 @@ def build_agent(model: Model | None = None, root: str = ".") -> Agent:
 
     return Agent(
         model=model
-        or OpenAIModel(os.environ.get("AGENTLING_EXAMPLE_MODEL", "gpt-4o-mini")),
+        or OpenAIChatModel(os.environ.get("AGENTLING_EXAMPLE_MODEL", "gpt-4o-mini")),
         tools=[read_file, list_files],
         skills=[Path(__file__).parent / "skills" / "code-reviewer"],
         max_tool_output_chars=2000,
