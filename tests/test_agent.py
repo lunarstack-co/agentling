@@ -4,14 +4,17 @@ import json
 import re
 import threading
 from collections.abc import AsyncIterator, Sequence
+from contextlib import aclosing
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import agentling.events
 from agentling.agent import Agent, AgentSession, _truncate_middle
 from agentling.errors import ModelError
 from agentling.events import (
+    Event,
     FinalEvent,
     StepEvent,
     TextDelta,
@@ -19,7 +22,7 @@ from agentling.events import (
     ToolResultEvent,
     print_events,
 )
-from agentling.memory import ActionStep, FinalStep, Memory, TaskStep
+from agentling.memory import ActionStep, FinalStep, Memory, Step, TaskStep
 from agentling.models import (
     ChatMessage,
     Delta,
@@ -371,46 +374,8 @@ async def test_always_raising_tool_recovers() -> None:
 # --------------------------------------------------------------------------- #
 # Interruption + resume
 # --------------------------------------------------------------------------- #
-async def test_interrupt_stops_run_gracefully() -> None:
-    model = FakeModel(
-        [_tool_turn("c1", "add", a=1, b=1), _assistant(content="unreached")]
-    )
-    agent = Agent(model=model, tools=[add])
-    session = agent.start()
-
-    fired: list[bool] = []
-
-    def interrupt_after_first(step: object) -> None:
-        if not fired:
-            fired.append(True)
-            session.interrupt()
-
-    session.step_callbacks.append(interrupt_after_first)
-
-    assert await session.run("loop") == "Run interrupted."
-    assert isinstance(session.memory.steps[-1], ActionStep)  # paused before a FinalStep
-    assert len(model.calls) == 1
-
-
-async def test_interrupt_while_idle_stops_the_next_run() -> None:
-    model = FakeModel([_assistant(content="unreached")])
-    session = Agent(model=model).start()
-
-    session.interrupt()
-
-    assert await session.run("task") == "Run interrupted."
-    assert model.calls == []
-
-
-async def test_interrupt_then_resume_completes() -> None:
-    model = FakeModel(
-        [
-            _tool_turn("c1", "add", a=1, b=1),
-            _assistant(content="finished on resume"),
-        ]
-    )
-    agent = Agent(model=model, tools=[add])
-    session = agent.start()
+def _interrupt_after_first_step(session: AgentSession) -> None:
+    """Make `session` interrupt itself once, after its first recorded step."""
 
     fired: list[bool] = []
 
@@ -421,11 +386,457 @@ async def test_interrupt_then_resume_completes() -> None:
 
     session.step_callbacks.append(interrupt_once)
 
+
+def _roles(memory: Memory) -> Sequence[str]:
+    """Message roles in memory, without the system prompt."""
+    return [message.role for message in memory.to_messages("system")][1:]
+
+
+def _task_steps(session: AgentSession) -> int:
+    return sum(isinstance(step, TaskStep) for step in session.memory.steps)
+
+
+async def test_interrupt_stops_run_gracefully() -> None:
+    model = FakeModel(
+        [_tool_turn("c1", "add", a=1, b=1), _assistant(content="unreached")]
+    )
+    session = Agent(model=model, tools=[add]).start()
+    _interrupt_after_first_step(session)
+
+    assert await session.run("loop") == "Run interrupted."
+    assert isinstance(session.memory.steps[-1], ActionStep)  # paused before a FinalStep
+    assert len(model.calls) == 1
+
+
+async def test_interrupt_while_idle_has_no_effect() -> None:
+    model = FakeModel([_assistant(content="ok")])
+    session = Agent(model=model).start()
+
+    session.interrupt()
+
+    assert await session.run("q") == "ok"
+    assert _roles(session.memory) == ["user", "assistant"]
+    assert len(model.calls) == 1
+
+
+async def test_interrupt_after_a_finished_run_is_dropped() -> None:
+    model = FakeModel([_assistant(content="a"), _assistant(content="b")])
+    session = Agent(model=model).start()
+    await session.run("first")
+
+    session.interrupt()
+    final = [event async for event in session.run("second", stream=True)][-1]
+
+    assert isinstance(final, FinalEvent)
+    assert (final.answer, final.status) == ("b", "completed")
+
+
+def test_interrupt_docstring_says_idle_calls_do_nothing() -> None:
+    assert "Has no effect when no run is active." in (
+        AgentSession.interrupt.__doc__ or ""
+    )
+
+
+def test_the_interrupt_is_cleared_in_one_place() -> None:
+    agent_py = Path(__file__).resolve().parents[1] / "src" / "agentling" / "agent.py"
+    assert agent_py.read_text(encoding="utf-8").count("_interrupt.clear()") == 1
+
+
+async def test_interrupt_then_resume_completes() -> None:
+    model = FakeModel(
+        [
+            _tool_turn("c1", "add", a=1, b=1),
+            _assistant(content="finished on resume"),
+        ]
+    )
+    session = Agent(model=model, tools=[add]).start()
+    _interrupt_after_first_step(session)
+
     assert await session.run("start") == "Run interrupted."
-    # reset=False keeps the interrupted run's memory; the loop resumes from it.
-    assert await session.run("continue", reset=False) == "finished on resume"
-    assert len(model.calls) == 2
-    assert sum(isinstance(s, TaskStep) for s in session.memory.steps) == 2
+    before = list(session.memory.steps)
+
+    assert await session.resume() == "finished on resume"
+    assert [message.role for message in model.calls[1]] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert _task_steps(session) == 1
+    assert session.memory.steps[:2] == before
+
+
+async def test_run_with_reset_false_still_adds_the_task() -> None:
+    model = FakeModel(
+        [_tool_turn("c1", "add", a=1, b=1), _assistant(content="finished")]
+    )
+    session = Agent(model=model, tools=[add]).start()
+    _interrupt_after_first_step(session)
+
+    assert await session.run("start") == "Run interrupted."
+    assert await session.run("continue", reset=False) == "finished"
+    assert _task_steps(session) == 2
+
+
+async def test_resume_can_stream() -> None:
+    model = FakeModel(
+        [_tool_turn("c1", "add", a=1, b=1), _assistant(content="finished")]
+    )
+    session = Agent(model=model, tools=[add]).start()
+    _interrupt_after_first_step(session)
+    await session.run("start")
+
+    events = [event async for event in session.resume(stream=True)]
+
+    final = events[-1]
+    assert isinstance(final, FinalEvent)
+    assert (final.answer, final.status) == ("finished", "completed")
+    assert _task_steps(session) == 1
+
+
+async def test_resume_max_steps_counts_from_zero() -> None:
+    model = FakeModel(
+        [
+            _tool_turn("c1", "add", a=1, b=1),
+            _tool_turn("c2", "add", a=2, b=2),
+            _assistant(content="forced"),
+        ]
+    )
+    session = Agent(model=model, tools=[add]).start()
+    _interrupt_after_first_step(session)
+    await session.run("start")
+
+    final = [event async for event in session.resume(stream=True, max_steps=1)][-1]
+
+    assert isinstance(final, FinalEvent)
+    assert (final.answer, final.status) == ("forced", "max_steps")
+    assert sum(isinstance(step, ActionStep) for step in session.memory.steps) == 2
+
+
+def test_resume_on_a_fresh_session_raises() -> None:
+    session = Agent(model=FakeModel([])).start()
+
+    # Raised by the call itself, before any coroutine or stream exists.
+    with pytest.raises(ValueError, match="^Nothing to resume$"):
+        _ = session.resume()
+    with pytest.raises(ValueError, match="^Nothing to resume$"):
+        session.resume(stream=True)
+
+
+async def test_resume_after_a_finished_run_raises() -> None:
+    session = Agent(model=FakeModel([_assistant(content="done")])).start()
+    await session.run("q")
+
+    with pytest.raises(ValueError, match="^Nothing to resume$"):
+        await session.resume()
+
+
+# --------------------------------------------------------------------------- #
+# One run at a time per session
+# --------------------------------------------------------------------------- #
+_ALREADY_RUNNING = r"^Session is already running\. .*contextlib\.aclosing\.$"
+
+
+async def test_is_running_tracks_the_run() -> None:
+    model = FakeModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="ok")])
+    session = Agent(model=model, tools=[add]).start()
+    seen: list[bool] = []
+    session.step_callbacks.append(lambda step: seen.append(session.is_running))
+
+    assert session.is_running is False
+    await session.run("go")
+
+    assert seen == [True]
+    assert session.is_running is False
+
+
+async def test_is_running_resets_when_a_stream_is_closed_early() -> None:
+    model = FakeModel([_assistant(content="a"), _assistant(content="b")])
+    session = Agent(model=model).start()
+
+    async with aclosing(session.run("first", stream=True)) as events:
+        await anext(events)
+        assert session.is_running is True
+    assert session.is_running is False
+
+    stream = session.run("second", stream=True)
+    await anext(stream)
+    assert session.is_running is True
+    await stream.aclose()
+    assert session.is_running is False
+
+
+async def test_an_unstarted_stream_does_not_hold_the_session() -> None:
+    session = Agent(model=FakeModel([_assistant(content="b")])).start()
+
+    unstarted = session.run("a", stream=True)
+
+    assert session.is_running is False
+    assert await session.run("b") == "b"
+    await unstarted.aclose()
+
+
+async def test_a_second_run_while_running_is_refused() -> None:
+    model = FakeModel([_assistant(content="first answer")])
+    session = Agent(model=model).start()
+
+    first = session.run("a", stream=True)
+    assert isinstance(await anext(first), TextDelta)
+
+    with pytest.raises(RuntimeError, match=_ALREADY_RUNNING):
+        await session.run("b")
+
+    final = [event async for event in first][-1]
+    assert isinstance(final, FinalEvent)
+    assert final.answer == "first answer"
+    assert len(model.calls) == 1
+
+
+async def test_a_second_stream_is_refused_on_its_first_step() -> None:
+    model = FakeModel([_assistant(content="first answer")])
+    session = Agent(model=model).start()
+    first = session.run("a", stream=True)
+    await anext(first)
+
+    second = session.run("b", stream=True)
+    with pytest.raises(RuntimeError, match=_ALREADY_RUNNING):
+        await anext(second)
+
+    final = [event async for event in first][-1]
+    assert isinstance(final, FinalEvent)
+    assert final.answer == "first answer"
+
+
+async def test_resume_while_running_is_refused() -> None:
+    model = FakeModel(
+        [_tool_turn("c1", "add", a=1, b=1), _assistant(content="finished")]
+    )
+    session = Agent(model=model, tools=[add]).start()
+    _interrupt_after_first_step(session)
+    await session.run("start")
+
+    async with aclosing(session.resume(stream=True)) as resumed:
+        await anext(resumed)
+        with pytest.raises(RuntimeError, match=_ALREADY_RUNNING):
+            await session.resume()
+
+
+async def test_running_again_from_a_callback_is_refused() -> None:
+    model = FakeModel(
+        [_tool_turn("c1", "add", a=1, b=1), _assistant(content="unreached")]
+    )
+    session = Agent(model=model, tools=[add]).start()
+
+    async def run_again(step: Step) -> None:
+        await session.run("again")
+
+    session.step_callbacks.append(run_again)
+
+    with pytest.raises(RuntimeError, match=_ALREADY_RUNNING):
+        await session.run("go")
+    assert session.is_running is False
+    assert isinstance(session.memory.steps[-1], ActionStep)
+
+
+async def test_run_and_resume_can_be_scheduled_as_tasks() -> None:
+    # mypy checks this file, so these create_task calls also pin that the
+    # non-streaming run() and resume() are typed as coroutines.
+    model = FakeModel(
+        [_tool_turn("c1", "add", a=1, b=1), _assistant(content="finished")]
+    )
+    session = Agent(model=model, tools=[add]).start()
+    _interrupt_after_first_step(session)
+
+    first: asyncio.Task[str] = asyncio.create_task(session.run("go"))
+    assert await first == "Run interrupted."
+    resumed: asyncio.Task[str] = asyncio.create_task(session.resume())
+    assert await resumed == "finished"
+
+    agent = Agent(model=FakeModel([_assistant(content="x")]))
+    one_shot: asyncio.Task[str] = asyncio.create_task(agent.run("q"))
+    assert await one_shot == "x"
+
+
+async def test_sessions_run_one_after_another_and_agents_run_concurrently() -> None:
+    session = Agent(
+        model=FakeModel([_assistant(content="a"), _assistant(content="b")])
+    ).start()
+    assert await session.run("1") == "a"
+    assert await session.run("2") == "b"
+
+    agent = Agent(model=FakeModel([_assistant(content="x"), _assistant(content="y")]))
+    assert sorted(await asyncio.gather(agent.run("1"), agent.run("2"))) == ["x", "y"]
+
+
+# --------------------------------------------------------------------------- #
+# final_answer ends the run without tool events
+# --------------------------------------------------------------------------- #
+def _event_names(events: list[Event]) -> list[str]:
+    return [type(event).__name__ for event in events]
+
+
+async def test_final_answer_emits_no_tool_events() -> None:
+    model = FakeModel([_tool_turn("c1", "final_answer", answer="x")])
+    session = Agent(model=model).start()
+
+    events = [event async for event in session.run("go", stream=True)]
+
+    assert _event_names(events) == ["StepEvent", "FinalEvent"]
+    final = events[-1]
+    assert isinstance(final, FinalEvent)
+    assert final.answer == "x"
+    action = session.memory.steps[1]
+    assert isinstance(action, ActionStep)
+    assert action.model_message.tool_calls[0].name == "final_answer"
+    assert action.tool_results[0].content == "x"
+
+
+async def test_a_tool_and_final_answer_in_one_step() -> None:
+    model = FakeModel(
+        [
+            _assistant(
+                tool_calls=[
+                    ToolCall(id="c1", name="add", arguments={"a": 1, "b": 2}),
+                    ToolCall(id="c2", name="final_answer", arguments={"answer": "3"}),
+                ]
+            )
+        ]
+    )
+    session = Agent(model=model, tools=[add]).start()
+
+    events = [event async for event in session.run("go", stream=True)]
+
+    assert _event_names(events) == [
+        "ToolCallEvent",
+        "ToolResultEvent",
+        "StepEvent",
+        "FinalEvent",
+    ]
+    call, result = events[0], events[1]
+    assert isinstance(call, ToolCallEvent) and call.tool_call.name == "add"
+    assert isinstance(result, ToolResultEvent) and result.result.name == "add"
+    action = session.memory.steps[1]
+    assert isinstance(action, ActionStep)
+    assert len(action.tool_results) == 2
+
+
+async def test_text_then_final_answer() -> None:
+    model = FakeModel(
+        [
+            _assistant(
+                content="thinking",
+                tool_calls=[
+                    ToolCall(id="c1", name="final_answer", arguments={"answer": "x"})
+                ],
+            )
+        ]
+    )
+
+    events = [event async for event in Agent(model=model).run("go", stream=True)]
+
+    assert _event_names(events) == ["TextDelta", "StepEvent", "FinalEvent"]
+
+
+async def test_final_answer_with_bad_arguments_is_recorded_not_shown() -> None:
+    model = FakeModel(
+        [_tool_turn("c1", "final_answer", wrong=1), _assistant(content="recovered")]
+    )
+    session = Agent(model=model).start()
+
+    events = [event async for event in session.run("go", stream=True)]
+
+    assert _event_names(events) == ["StepEvent", "TextDelta", "FinalEvent"]
+    action = session.memory.steps[1]
+    assert isinstance(action, ActionStep)
+    assert action.tool_results[0].is_error is True
+
+
+def test_event_docstring_explains_final_answer() -> None:
+    assert "final_answer" in (agentling.events.__doc__ or "")
+
+
+# --------------------------------------------------------------------------- #
+# Step callbacks
+# --------------------------------------------------------------------------- #
+async def test_async_step_callback_runs_before_the_step_event() -> None:
+    log: list[str] = []
+
+    async def record(step: Step) -> None:
+        await asyncio.sleep(0)
+        log.append("callback")
+
+    model = FakeModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="ok")])
+    session = Agent(model=model, tools=[add], step_callbacks=[record]).start()
+
+    async for event in session.run("go", stream=True):
+        if isinstance(event, StepEvent):
+            log.append("step")
+
+    assert log == ["callback", "step"]
+    assert session.step_callbacks == [record]
+
+
+async def test_step_callbacks_run_in_registration_order() -> None:
+    log: list[str] = []
+
+    def first(step: Step) -> None:
+        log.append("first")
+
+    async def second(step: Step) -> None:
+        await asyncio.sleep(0)
+        log.append("second")
+
+    def third(step: Step) -> None:
+        log.append("third")
+
+    model = FakeModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="ok")])
+    session = Agent(model=model, tools=[add], step_callbacks=[first, second]).start()
+    session.step_callbacks.append(third)
+
+    await session.run("go")
+
+    assert log == ["first", "second", "third"]
+
+
+async def test_a_raising_callback_on_the_final_answer_step_keeps_the_answer() -> None:
+    def boom(step: Step) -> None:
+        raise ValueError("boom")
+
+    model = FakeModel([_tool_turn("c1", "final_answer", answer="42")])
+    session = Agent(model=model, step_callbacks=[boom]).start()
+
+    with pytest.raises(ValueError, match="boom"):
+        await session.run("go")
+
+    assert [type(step) for step in session.memory.steps] == [
+        TaskStep,
+        ActionStep,
+        FinalStep,
+    ]
+    assert session.memory.steps[-1] == FinalStep(answer="42")
+    with pytest.raises(ValueError, match="^Nothing to resume$"):
+        await session.resume()
+    assert len(model.calls) == 1
+
+
+async def test_a_raising_async_callback_stops_the_run_after_recording() -> None:
+    async def boom(step: Step) -> None:
+        raise ValueError("boom")
+
+    model = FakeModel(
+        [_tool_turn("c1", "add", a=1, b=1), _assistant(content="unreached")]
+    )
+    session = Agent(model=model, tools=[add], step_callbacks=[boom]).start()
+    events: list[Event] = []
+
+    with pytest.raises(ValueError, match="boom"):
+        async for event in session.run("go", stream=True):
+            events.append(event)
+
+    assert isinstance(session.memory.steps[-1], ActionStep)
+    assert not any(isinstance(event, StepEvent) for event in events)
+    assert len(model.calls) == 1
+    assert session.is_running is False
 
 
 # --------------------------------------------------------------------------- #
@@ -584,15 +995,16 @@ async def test_skill_tools_do_not_leak_between_sessions() -> None:
 
 
 async def test_interrupt_affects_only_its_session() -> None:
-    agent = Agent(model=FakeModel([_assistant(content="s2 done")]))
+    model = FakeModel(
+        [_tool_turn("c1", "add", a=1, b=1), _assistant(content="s2 done")]
+    )
+    agent = Agent(model=model, tools=[add])
     s1 = agent.start()
     s2 = agent.start()
+    _interrupt_after_first_step(s1)
 
-    s1.interrupt()
-
-    # s1 sees its own interrupt and stops before the first step (no model call).
     assert await s1.run("stop") == "Run interrupted."
-    # s2 is unaffected and runs to completion.
+    # s1's interrupt flag is still set; s2 has its own and runs to completion.
     assert await s2.run("go") == "s2 done"
 
 

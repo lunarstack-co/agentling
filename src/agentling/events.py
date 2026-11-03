@@ -6,8 +6,10 @@ and StepEvent carries each step as it is recorded.
 
 Within a step the order is fixed: its TextDelta chunks, then every
 ToolCallEvent, then every ToolResultEvent in the same order, then the StepEvent.
-A run that ends normally emits exactly one FinalEvent, last. A run that fails
-raises instead.
+A call to final_answer gets neither tool event: it is how the run ends, so the
+step's StepEvent is followed by the FinalEvent. The call and its result are
+still in the StepEvent's ActionStep. A run that ends normally emits exactly one
+FinalEvent, last. A run that fails raises instead.
 """
 
 from __future__ import annotations

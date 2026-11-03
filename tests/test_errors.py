@@ -8,6 +8,7 @@ from agentling.errors import (
     ModelContextLengthError,
     ModelError,
     ModelOutputError,
+    ModelOutputTruncatedError,
     ModelRateLimitError,
     ModelServerError,
     ModelTimeoutError,
@@ -22,6 +23,7 @@ MODEL_ERRORS: list[tuple[type[ModelError], bool]] = [
     (ModelBadRequestError, False),
     (ModelContextLengthError, False),
     (ModelOutputError, False),
+    (ModelOutputTruncatedError, False),
 ]
 
 

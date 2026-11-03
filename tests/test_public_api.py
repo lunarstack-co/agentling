@@ -53,6 +53,7 @@ _MODEL_ERRORS = [
     "ModelBadRequestError",
     "ModelContextLengthError",
     "ModelOutputError",
+    "ModelOutputTruncatedError",
 ]
 
 
@@ -65,7 +66,14 @@ def test_model_errors_are_exported_from_both_places(name: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["ToolDefinition", "FinishReason", "deltas_from_message", "RetryPolicy"]
+    "name",
+    [
+        "ToolDefinition",
+        "FinishReason",
+        "deltas_from_message",
+        "RetryPolicy",
+        "StepCallback",
+    ],
 )
 def test_provider_contract_names_are_exported(name: str) -> None:
     assert name in agentling.__all__

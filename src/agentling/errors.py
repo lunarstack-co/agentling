@@ -93,10 +93,18 @@ class ModelContextLengthError(ModelError):
 class ModelOutputError(ModelError):
     """The model's output couldn't be used.
 
-    Covers invalid or non-object JSON arguments and a missing tool name; the
-    agent loop asks the model to try again, up to twice, before raising
-    ModelError. Also raised, without a retry, when an adapter's provider_data
-    isn't JSON-serialisable.
+    Covers invalid or non-object JSON arguments and a missing tool name in a
+    streamed tool call. When the loop itself hits these, it asks the model to
+    try again, up to twice, before raising ModelError. Also raised, without a
+    retry, when an adapter's provider_data isn't JSON-serialisable.
+    """
+
+
+class ModelOutputTruncatedError(ModelError):
+    """The model hit its output limit partway through a tool call.
+
+    The model can't fix this by trying again, so the loop raises it instead of
+    asking for a correction. Raise the model's output limit, or ask for less.
     """
 
 
