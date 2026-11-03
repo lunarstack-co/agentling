@@ -120,10 +120,6 @@ def _message_deltas(message: ChatMessage) -> list[Delta]:
     return deltas
 
 
-# --------------------------------------------------------------------------- #
-# Conformance report
-# --------------------------------------------------------------------------- #
-
 _RULE_NAMES = {
     1: "text reassembles",
     2: "finish_reason once",
@@ -182,10 +178,6 @@ class ConformanceReport:
     def __str__(self) -> str:
         return "\n".join(str(rule) for rule in self.rules)
 
-
-# --------------------------------------------------------------------------- #
-# check_model
-# --------------------------------------------------------------------------- #
 
 _SYSTEM = "You are a test subject. Follow instructions exactly."
 _TEXT_PROMPT = "Reply with exactly the word: pong"
@@ -437,11 +429,6 @@ def _rule_empty_deltas(turns: list[_Turn]) -> RuleResult:
             ):
                 return _failed(8, f"a Delta carried nothing (turn {turn.number})")
     return _passed(8)
-
-
-# --------------------------------------------------------------------------- #
-# Fixtures and recording
-# --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)

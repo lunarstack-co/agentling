@@ -1,12 +1,12 @@
-"""A streaming repo assistant with safe, read-only file tools.
+"""A repo assistant with read-only file tools, streamed with print_events.
 
-Needs an OpenAI-compatible API key (set OPENAI_API_KEY):
+Needs OPENAI_API_KEY; AGENTLING_EXAMPLE_MODEL overrides the model name:
 
     uv run python -m examples.cli_repo_assistant "Summarize the README"
 
-Demonstrates streaming with print_events, file tools sandboxed to a project
-root, an output cap (max_tool_output_chars), and loading the bundled
-code-reviewer skill. build_agent() takes an optional model so tests run offline.
+The file tools refuse paths outside the project root. Also shows
+max_tool_output_chars and the bundled code-reviewer skill. build_agent() takes
+an optional model so tests run it offline.
 """
 
 from __future__ import annotations

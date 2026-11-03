@@ -1,6 +1,6 @@
 """Provider-neutral message, tool and streaming types, and the Model protocol.
 
-agentling ships no model adapters: an app passes any object with a matching
+Agentling ships no model adapters: an app passes any object with a matching
 stream() method, written for whichever backend it uses.
 """
 
@@ -34,7 +34,7 @@ class ToolDefinition:
 
 @dataclass
 class ToolCall:
-    """A tool call requested by the model, in agentling's own format."""
+    """A tool call requested by the model, in Agentling's own format."""
 
     id: str
     name: str
@@ -45,7 +45,7 @@ class ToolCall:
 class ToolCallDelta:
     """A piece of a streamed tool call, grouped with the others by `index`.
 
-    `id` may be missing (some local servers never send one); agentling then
+    `id` may be missing (some local servers never send one); Agentling then
     makes one up.
     """
 
@@ -96,7 +96,7 @@ class Usage:
 
 @dataclass
 class ChatMessage:
-    """A chat message in agentling's own format; adapters convert it."""
+    """A chat message in Agentling's own format; adapters convert it."""
 
     role: Role
     content: str = ""
@@ -109,7 +109,7 @@ class ChatMessage:
 
 
 class Model(Protocol):
-    """The one method agentling needs from a model backend.
+    """The one method Agentling needs from a model backend.
 
     Write an adapter for your backend that follows these rules:
 
@@ -164,7 +164,7 @@ async def deltas_from_message(message: ChatMessage) -> AsyncIterator[Delta]:
 
 @dataclass
 class _ToolCallFragment:
-    """Mutable accumulator for a streamed tool call (internal to agglomeration)."""
+    """Collects the pieces of one streamed tool call."""
 
     id: str | None = None
     name: str | None = None

@@ -1,13 +1,13 @@
-"""A file-backed notes assistant: add, search, and list notes.
+"""A notes assistant whose tools read and write files in one directory.
 
-Needs an OpenAI-compatible API key (set OPENAI_API_KEY):
+Needs OPENAI_API_KEY; AGENTLING_EXAMPLE_MODEL overrides the model name:
 
     uv run python -m examples.cli_notes_agent
 
-Shows file tools limited to a notes directory, an async tool (search), a tool
-that writes and so isn't parallel_safe (add), and the tool_timeout and
-redact_errors settings. build_agent() takes an optional model so tests run
-offline against a temporary directory.
+Shows an async tool (search_notes), a writing tool marked
+parallel_safe=False (add_note), and the tool_timeout and redact_errors
+settings. build_agent() takes an optional model and directory so tests run
+it offline.
 """
 
 from __future__ import annotations

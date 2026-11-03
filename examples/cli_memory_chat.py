@@ -1,12 +1,11 @@
-"""Memory-persistence demo: dump a session, reload it, and continue.
+"""Saves a session's memory to JSON, loads it into a new session, and continues.
 
-Runs fully offline with a scripted model, so no API key is needed:
+Runs offline with a scripted model:
 
-    uv run python examples/cli_memory_chat.py
+    uv run python -m examples.cli_memory_chat
 
-The first session learns a fact; its typed memory is serialized to JSON; a fresh
-session reloads that memory and continues the conversation with reset=False. The
-continuation is streamed so the terminal FinalEvent's status is shown too.
+The second session continues with reset=False and streams, so the
+FinalEvent's status is printed with the answer.
 """
 
 from __future__ import annotations
@@ -42,13 +41,12 @@ def build_agent() -> Agent:
 async def main() -> None:
     agent = build_agent()
 
-    # First session: learn something, then serialize the run to JSON.
     first = agent.start()
     await first.run("Hi, my name is Sam.")
     saved = first.memory.dump_json()
     print(f"Saved {len(first.memory.steps)} steps to JSON.\n")
 
-    # Later, in a fresh session (or another process), restore and continue.
+    # A fresh session, or another process, can restore and continue.
     second = agent.start()
     second.memory = Memory.load_json(saved)
 

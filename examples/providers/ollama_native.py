@@ -1,11 +1,10 @@
 """A model adapter for Ollama's native /api/chat endpoint.
 
-Streams text, thinking and tool calls over httpx and turns HTTP failures into
-agentling's ModelError classes. The agent loop does the retrying, so this
-adapter never retries. For Ollama's OpenAI-compatible /v1 endpoint, use
-openai_chat.py instead.
+Streams text, thinking and tool calls over httpx and maps HTTP failures to
+Agentling's ModelError classes. It never retries; the agent loop does. For
+Ollama's OpenAI-compatible /v1 endpoint, use openai_chat.py instead.
 
-Ollama differs from the OpenAI shape in ways this file handles:
+Where Ollama differs from the OpenAI shape:
 
 - The stream is newline-delimited JSON, not server-sent events.
 - Tool-call arguments arrive as a JSON object, often all at once.
@@ -264,8 +263,8 @@ def error_for_response(response: httpx.Response) -> ModelError:
         )
     if status >= 500:
         return ModelServerError(message, status=status)
-    # A missing model is a 404, a bad request or a model without tool
-    # support a 400. None of them goes away by trying again.
+    # A missing model is a 404; a bad request or a model without tool support
+    # is a 400. Retrying fixes neither.
     return ModelBadRequestError(message, status=status)
 
 

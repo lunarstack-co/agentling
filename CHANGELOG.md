@@ -1,12 +1,12 @@
 # Changelog
 
-All notable changes to agentling are documented here. The format follows
+All notable changes to Agentling are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims
 to follow [semantic versioning](https://semver.org/).
 
 ## [0.2.0] - Unreleased
 
-agentling no longer ships a model adapter or depends on `openai`. Any object
+Agentling no longer ships a model adapter or depends on `openai`. Any object
 with a `stream(messages, tools)` method that yields `Delta`s is a model, so an
 app can use OpenAI, Anthropic, Gemini or a local server through an adapter of
 its own. `examples/providers/openai_chat.py` is one to copy.
@@ -46,7 +46,7 @@ its own. `examples/providers/openai_chat.py` is one to copy.
   Messages API (thinking blocks are kept and replayed through
   `provider_data`), and `ollama_native.py` for Ollama's `/api/chat`. Each takes
   an `extra_body`, ships a fixture in `examples/providers/fixtures/` and passes
-  `check_model`. They need `httpx`, which agentling itself doesn't depend on.
+  `check_model`. They need `httpx`, which Agentling itself doesn't depend on.
 - `examples/providers/record.py`, which records an adapter against a live
   backend into a fixture with API keys redacted.
 - `examples/custom_model_generate_only.py`, a model whose backend can't stream.
@@ -100,7 +100,7 @@ its own. `examples/providers/openai_chat.py` is one to copy.
 
 - A slow consumer of `run(stream=True)` no longer receives a `CancelledError`
   caused by `model_timeout`.
-- Retries no longer stack. agentling used to retry on top of the OpenAI SDK's
+- Retries no longer stack. Agentling used to retry on top of the OpenAI SDK's
   own retries, up to nine attempts per request.
 - Interrupting a run mid-stream now closes the adapter's stream.
 - An interrupt during the last step stops the run instead of making one more

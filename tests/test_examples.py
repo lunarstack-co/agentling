@@ -54,32 +54,26 @@ def _call(call_id: str, name: str, /, **arguments: Any) -> ToolCall:
     return ToolCall(id=call_id, name=name, arguments=arguments)
 
 
-# --------------------------------------------------------------------------- #
-# Import / shape
-# --------------------------------------------------------------------------- #
+# Imports and shape
 def test_offline_examples_expose_build_agent_and_main() -> None:
     for module in (dynamic_tools, failure_recovery, memory_chat, observer):
         assert callable(module.build_agent)
         assert callable(module.main)
 
 
-# --------------------------------------------------------------------------- #
 # Failure recovery (offline)
-# --------------------------------------------------------------------------- #
 async def test_failure_recovery_recovers_from_tool_errors() -> None:
     session = failure_recovery.build_agent().start()
     answer = await session.run("compute")
 
-    assert "5" in answer  # the recovered final answer
+    assert "5" in answer
     action_steps = [s for s in session.memory.steps if isinstance(s, ActionStep)]
-    assert action_steps  # at least one step was recorded
+    assert action_steps
     errors = [r for s in action_steps for r in s.tool_results if r.is_error]
-    assert errors  # a tool failure surfaced as a recoverable observation
+    assert errors  # the tool failure came back as an observation
 
 
-# --------------------------------------------------------------------------- #
 # Dynamic tools (offline)
-# --------------------------------------------------------------------------- #
 async def test_dynamic_tools_example_adds_and_removes() -> None:
     session = dynamic_tools.build_agent().start()
     first, second = await dynamic_tools.run_demo(session)
@@ -98,29 +92,25 @@ async def test_dynamic_tools_example_adds_and_removes() -> None:
     assert results[1].error_kind == "unknown_tool"
 
 
-# --------------------------------------------------------------------------- #
 # Memory replay (offline)
-# --------------------------------------------------------------------------- #
 async def test_memory_replay_dumps_reloads_and_continues() -> None:
     agent = memory_chat.build_agent()
 
     first = agent.start()
     await first.run("Hi, my name is Sam.")
     saved = first.memory.dump_json()
-    assert saved  # memory serialized to JSON
+    assert saved
 
     second = agent.start()
     second.memory = Memory.load_json(saved)
-    assert second.memory.steps  # restored the prior run's steps
+    assert second.memory.steps
 
     await second.run("What is my name?", reset=False)
     task_steps = [s for s in second.memory.steps if isinstance(s, TaskStep)]
     assert len(task_steps) > 1  # continuation built on the restored memory
 
 
-# --------------------------------------------------------------------------- #
 # Event observer (offline)
-# --------------------------------------------------------------------------- #
 async def test_observer_handles_every_event_type() -> None:
     counts = await observer.observe(observer.build_agent())
 
@@ -134,9 +124,7 @@ async def test_observer_handles_every_event_type() -> None:
         assert counts.get(event_type, 0) >= 1
 
 
-# --------------------------------------------------------------------------- #
 # API-backed examples (driven offline with an injected fake model)
-# --------------------------------------------------------------------------- #
 def test_api_examples_expose_build_agent_and_main() -> None:
     for module in (math_tutor, repo_assistant, notes_agent):
         assert callable(module.build_agent)
@@ -212,9 +200,7 @@ def test_notes_agent_configures_timeout_and_redaction() -> None:
     assert agent.redact_errors is True
 
 
-# --------------------------------------------------------------------------- #
 # Reference adapters against their recorded fixtures
-# --------------------------------------------------------------------------- #
 _FIXTURES = Path(__file__).resolve().parents[1] / "examples" / "providers" / "fixtures"
 
 
@@ -279,9 +265,7 @@ async def test_anthropic_fixture_keeps_both_thinking_blocks() -> None:
     assert [b["type"] for b in blocks] == ["thinking", "redacted_thinking"]
 
 
-# --------------------------------------------------------------------------- #
 # record.py and the generate-only example
-# --------------------------------------------------------------------------- #
 def _replies(*bodies: str) -> httpx.MockTransport:
     remaining = list(bodies)
 

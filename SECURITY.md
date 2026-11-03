@@ -8,7 +8,7 @@ within a few days and keep you posted on the fix.
 
 ## Trust model
 
-agentling runs code you give it. Two boundaries are worth calling out:
+Agentling runs code you give it. Two boundaries are worth calling out:
 
 - **Tools are trusted code.** A `@tool` function runs in your process with your
   privileges. Only register tools you trust, and treat the tool *arguments*

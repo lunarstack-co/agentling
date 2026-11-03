@@ -1,13 +1,12 @@
-"""A model whose backend can't stream: one request, one whole reply.
+"""An adapter for a backend that returns whole replies and can't stream.
 
-Runs fully offline, so no API key is needed:
+Runs offline:
 
-    uv run python examples/custom_model_generate_only.py
+    uv run python -m examples.custom_model_generate_only
 
-Some backends only return a complete message. The Model protocol still asks
-for stream(), so the adapter wraps the reply with deltas_from_message, which
-yields it as a single Delta. CannedBackend stands in for the real backend;
-swap its generate() for your HTTP call.
+The Model protocol only has stream(), so the adapter wraps each reply with
+deltas_from_message. CannedBackend stands in for the real backend; replace its
+generate() with your HTTP call.
 """
 
 from __future__ import annotations

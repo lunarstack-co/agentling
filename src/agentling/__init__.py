@@ -1,7 +1,6 @@
-"""agentling: a tiny async tool-calling agent framework.
+"""Agentling: a small agent engine for Python.
 
-This module is the public API. Import from `agentling` directly; the submodules
-under it are implementation detail and may be reorganized.
+Import everything from `agentling`. The submodules are internal and may move.
 """
 
 from importlib.metadata import PackageNotFoundError, version

@@ -1,11 +1,11 @@
-"""Dynamic-tools demo: add a tool built from a JSON Schema, then remove it.
+"""Adds a tool built from a JSON Schema to a session, then removes it.
 
-Runs fully offline with a scripted model, so no API key is needed:
+Runs offline with a scripted model:
 
-    uv run python examples/cli_dynamic_tools.py
+    uv run python -m examples.cli_dynamic_tools
 
-The tool is added to the session, the model uses it, then the tool is removed
-and the model recovers from the unknown-tool observation.
+After the removal the model calls the tool again, gets an unknown-tool
+observation, and answers without it.
 """
 
 from __future__ import annotations

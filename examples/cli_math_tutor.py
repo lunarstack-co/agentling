@@ -1,12 +1,11 @@
-"""The smallest useful agentling agent: a math tutor with two tools.
+"""A small agent with two tools: a math tutor.
 
-Needs an OpenAI-compatible API key (set OPENAI_API_KEY). The model name can be
-overridden with AGENTLING_EXAMPLE_MODEL:
+Needs OPENAI_API_KEY. AGENTLING_EXAMPLE_MODEL overrides the model name
+(default gpt-4o-mini):
 
     uv run python -m examples.cli_math_tutor
 
-build_agent() accepts an optional model so tests can inject a fake one and run
-without any network access.
+build_agent() takes an optional model so tests run it offline.
 """
 
 from __future__ import annotations

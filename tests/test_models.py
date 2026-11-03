@@ -23,9 +23,7 @@ from agentling.models import (
 _SYNTHESISED_ID = re.compile(r"^agentling_call_(\d+)_[0-9a-f]{8}$")
 
 
-# --------------------------------------------------------------------------- #
 # Neutral types
-# --------------------------------------------------------------------------- #
 def test_usage_total_tokens() -> None:
     assert Usage(input_tokens=3, output_tokens=4).total_tokens == 7
 
@@ -85,9 +83,7 @@ def test_model_docstring_states_the_adapter_contract(rule: str) -> None:
     assert rule in " ".join(Model.__doc__.split())
 
 
-# --------------------------------------------------------------------------- #
 # parse_tool_arguments
-# --------------------------------------------------------------------------- #
 def test_parse_tool_arguments_valid() -> None:
     assert parse_tool_arguments('{"a": 1}') == {"a": 1}
 
@@ -106,9 +102,7 @@ def test_parse_tool_arguments_non_object_raises() -> None:
         parse_tool_arguments("[1, 2]")
 
 
-# --------------------------------------------------------------------------- #
 # agglomerate_deltas: reassemble a stream into one ChatMessage
-# --------------------------------------------------------------------------- #
 def test_agglomerate_concatenates_content() -> None:
     msg = agglomerate_deltas([Delta(content="Hel"), Delta(content="lo"), Delta()])
     assert msg.role == "assistant"
@@ -248,9 +242,7 @@ def test_agglomerate_provider_data_last_wins_unmerged() -> None:
     assert msg.provider_data == {"b": 2}
 
 
-# --------------------------------------------------------------------------- #
 # deltas_from_message
-# --------------------------------------------------------------------------- #
 async def test_deltas_from_message_round_trips() -> None:
     message = ChatMessage(
         role="assistant",
@@ -271,9 +263,7 @@ async def test_deltas_from_message_round_trips() -> None:
     assert agglomerate_deltas(deltas) == message
 
 
-# --------------------------------------------------------------------------- #
 # Non-functional budgets
-# --------------------------------------------------------------------------- #
 def test_models_module_stays_small() -> None:
     source = Path(__file__).resolve().parents[1] / "src" / "agentling" / "models.py"
     assert len(source.read_text(encoding="utf-8").splitlines()) <= 250

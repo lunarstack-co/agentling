@@ -1,13 +1,12 @@
-"""Failure-recovery demo: watch the agent turn tool errors into observations.
+"""Shows tool failures coming back to the model as observations.
 
-Runs fully offline with a scripted model, so no API key is needed:
+Runs offline with a scripted model:
 
-    uv run python examples/cli_failure_recovery.py
+    uv run python -m examples.cli_failure_recovery
 
-The scripted model first calls a tool that raises an unexpected exception, then
-one that rejects invalid arguments, then retries with valid arguments and
-answers. agentling feeds each failure back to the model as an observation
-rather than crashing, so the run recovers on its own.
+The model calls a tool that raises, then one that rejects its arguments with
+ToolCallError, then retries with valid arguments and answers. Neither failure
+ends the run.
 """
 
 from __future__ import annotations

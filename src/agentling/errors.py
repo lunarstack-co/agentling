@@ -1,6 +1,6 @@
-"""Exception hierarchy for agentling.
+"""Exception hierarchy for Agentling.
 
-agentling's own errors descend from AgentlingError. Model adapters report
+Agentling's own errors descend from AgentlingError. Model adapters report
 failures as ModelError subclasses, which tell the loop whether a retry can
 help. Other exceptions can still reach the caller: ValueError and TypeError for
 bad configuration, and anything else an adapter raises, unchanged, since that
@@ -13,14 +13,13 @@ from typing import ClassVar
 
 
 class AgentlingError(Exception):
-    """Base class for agentling's own errors."""
+    """Base class for Agentling's own errors."""
 
 
 class AgentRunError(AgentlingError):
     """A run could not start or continue.
 
-    Reserved: agentling does not raise this yet. It is exported so code can
-    catch it once it does.
+    Reserved: Agentling doesn't raise it yet.
     """
 
 
@@ -111,7 +110,7 @@ class ModelOutputTruncatedError(ModelError):
 class ToolExecutionError(AgentlingError):
     """A tool failed while running, as opposed to receiving bad arguments.
 
-    Reserved: agentling does not raise this yet. Tool failures reach the model
+    Reserved: Agentling does not raise this yet. Tool failures reach the model
     as error observations instead.
     """
 
@@ -131,7 +130,7 @@ class MemoryLoadError(AgentlingError):
 class SkillLoadError(AgentlingError):
     """A skill could not be loaded.
 
-    Reserved: agentling does not raise this yet. Today a bad SKILL.md raises
+    Reserved: Agentling does not raise this yet. Today a bad SKILL.md raises
     ValueError or yaml.YAMLError, and a bad tool entry point raises ValueError
     or TypeError.
     """
