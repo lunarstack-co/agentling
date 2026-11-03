@@ -4,7 +4,7 @@ All notable changes to Agentling are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims
 to follow [semantic versioning](https://semver.org/).
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-11-03
 
 **Breaking: Agentling no longer ships a model provider.** Every removed or
 changed API is listed below, and [MIGRATING.md](MIGRATING.md) has the 0.1 code
