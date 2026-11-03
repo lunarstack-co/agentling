@@ -6,9 +6,7 @@ from agentling.models import ToolDefinition
 from agentling.tools import FinalAnswerTool, Tool, ToolCallError, _check_tool, tool
 
 
-# --------------------------------------------------------------------------- #
 # Schema generation
-# --------------------------------------------------------------------------- #
 def test_basic_types_required_and_descriptions() -> None:
     @tool
     def add(a: int, b: int = 0) -> int:
@@ -42,7 +40,7 @@ def test_literal_becomes_enum() -> None:
     prop = pick.definition.parameters["properties"]["unit"]
     assert prop["type"] == "string"
     assert prop["enum"] == ["c", "f"]
-    assert prop["default"] == "c"  # defaults are now exposed in the schema
+    assert prop["default"] == "c"  # defaults appear in the schema
 
 
 def test_optional_is_unwrapped() -> None:
@@ -100,9 +98,7 @@ def test_varargs_are_rejected() -> None:
             return "x"
 
 
-# --------------------------------------------------------------------------- #
-# @tool execution (sync + async)
-# --------------------------------------------------------------------------- #
+# @tool execution, sync and async
 async def test_sync_tool_runs() -> None:
     @tool
     def greet(name: str) -> str:
@@ -119,9 +115,7 @@ async def test_async_tool_runs() -> None:
     assert await fetch.call({"url": "x"}) == "data:x"
 
 
-# --------------------------------------------------------------------------- #
-# Argument validation -> ToolCallError
-# --------------------------------------------------------------------------- #
+# Argument validation raises ToolCallError
 @pytest.fixture
 def weather() -> Tool:
     @tool
@@ -165,9 +159,7 @@ async def test_non_dict_arguments_rejected(weather: Tool) -> None:
         await weather.call(["Paris"])  # type: ignore[arg-type]
 
 
-# --------------------------------------------------------------------------- #
 # FinalAnswerTool
-# --------------------------------------------------------------------------- #
 async def test_final_answer_tool() -> None:
     final = FinalAnswerTool()
     props = final.definition.parameters["properties"]
@@ -177,9 +169,7 @@ async def test_final_answer_tool() -> None:
     assert await final.call({"answer": "42"}) == "42"
 
 
-# --------------------------------------------------------------------------- #
 # @tool metadata and name validation
-# --------------------------------------------------------------------------- #
 def test_bare_tool_decorator_has_default_metadata() -> None:
     @tool
     def t(x: int) -> int:
@@ -222,9 +212,7 @@ def test_invalid_tool_name_is_rejected() -> None:
         tool(f)
 
 
-# --------------------------------------------------------------------------- #
 # Schemas from outside (JSON Schema tolerance)
-# --------------------------------------------------------------------------- #
 class _EchoTool(Tool):
     """A tool built from a raw schema, as an MCP or OpenAPI bridge would."""
 
@@ -380,9 +368,7 @@ async def test_enum_still_enforced() -> None:
         await t.call({"x": "k"})
 
 
-# --------------------------------------------------------------------------- #
 # validate_arguments and the public validate()
-# --------------------------------------------------------------------------- #
 def test_validate_arguments_defaults_true() -> None:
     @tool
     def t(x: int) -> int:
@@ -460,9 +446,7 @@ async def test_call_goes_through_validate() -> None:
     assert order == ["validate:{'x': 1}", "forward"]
 
 
-# --------------------------------------------------------------------------- #
 # Registration checks
-# --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "bad_name", ["issues.create", "a b", "", "x" * 65, "naïve", "trailing\n"]
 )

@@ -29,9 +29,7 @@ def _write_skill(folder: Path, text: str) -> Path:
     return folder
 
 
-# --------------------------------------------------------------------------- #
 # Skill.from_path: happy path
-# --------------------------------------------------------------------------- #
 def test_from_path_reads_name_description_and_body(tmp_path: Path) -> None:
     folder = _write_skill(
         tmp_path / "greeter",
@@ -110,9 +108,7 @@ def test_from_path_preserves_horizontal_rule_in_body(tmp_path: Path) -> None:
     assert "Section two" in skill.instructions
 
 
-# --------------------------------------------------------------------------- #
 # Skill.from_path: error paths
-# --------------------------------------------------------------------------- #
 def test_from_path_unparseable_yaml_raises_yaml_error(tmp_path: Path) -> None:
     folder = _write_skill(tmp_path / "s", "---\nname: [x\n---\nbody\n")
 
@@ -159,9 +155,7 @@ def test_from_path_missing_file_raises(tmp_path: Path) -> None:
         Skill.from_path(tmp_path / "does_not_exist")
 
 
-# --------------------------------------------------------------------------- #
 # _split_frontmatter
-# --------------------------------------------------------------------------- #
 def test_split_no_leading_fence_is_all_body() -> None:
     data, body = _split_frontmatter("# Just markdown\n")
 
@@ -221,9 +215,7 @@ def test_from_path_rejects_non_string_tool_entries(tmp_path: Path) -> None:
         Skill.from_path(folder)
 
 
-# --------------------------------------------------------------------------- #
 # _resolve_tool
-# --------------------------------------------------------------------------- #
 def test_resolve_tool_returns_the_tool_instance() -> None:
     resolved = _resolve_tool(f"{__name__}:sample_tool")
 
@@ -251,9 +243,7 @@ def test_resolve_tool_unknown_attribute_raises() -> None:
         _resolve_tool(f"{__name__}:missing_attribute")
 
 
-# --------------------------------------------------------------------------- #
 # Skill.load_tools
-# --------------------------------------------------------------------------- #
 def test_load_tools_empty_returns_empty_list() -> None:
     skill = Skill(name="x", description="y", instructions="", path=Path("."), tools=[])
 
@@ -294,9 +284,7 @@ def test_from_path_then_load_tools_end_to_end(tmp_path: Path) -> None:
     assert [t.name for t in loaded] == ["sample_tool"]
 
 
-# --------------------------------------------------------------------------- #
 # Bundled example
-# --------------------------------------------------------------------------- #
 def test_bundled_code_reviewer_example_loads() -> None:
     example = Path(__file__).parent.parent / "examples" / "skills" / "code-reviewer"
 

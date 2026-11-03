@@ -96,9 +96,7 @@ _CALC_SKILL = Skill(
 )
 
 
-# --------------------------------------------------------------------------- #
 # Termination paths
-# --------------------------------------------------------------------------- #
 async def test_forgiving_termination_returns_content() -> None:
     model = ScriptedModel([_assistant(content="42")])
     agent = Agent(model=model)
@@ -126,9 +124,7 @@ async def test_explicit_final_answer() -> None:
     assert await agent.run("finish up") == "done"
 
 
-# --------------------------------------------------------------------------- #
 # Tool execution
-# --------------------------------------------------------------------------- #
 async def test_tool_call_then_answer() -> None:
     model = ScriptedModel(
         [
@@ -193,9 +189,7 @@ async def test_tool_error_becomes_observation() -> None:
     assert action.tool_results[0].is_error is True
 
 
-# --------------------------------------------------------------------------- #
 # Streaming
-# --------------------------------------------------------------------------- #
 async def test_streaming_yields_events() -> None:
     model = ScriptedModel(
         [
@@ -228,9 +222,7 @@ async def test_streaming_emits_text_deltas() -> None:
     assert "".join(texts) == "hello world"
 
 
-# --------------------------------------------------------------------------- #
 # max_steps forced answer
-# --------------------------------------------------------------------------- #
 async def test_max_steps_forces_a_final_answer() -> None:
     # The model never ends the run itself; it always calls a tool.
     looping = [
@@ -252,9 +244,7 @@ def _tool_turn(call_id: str, name: str, **arguments: Any) -> ChatMessage:
     return _assistant(tool_calls=[ToolCall(id=call_id, name=name, arguments=arguments)])
 
 
-# --------------------------------------------------------------------------- #
 # Loop detector
-# --------------------------------------------------------------------------- #
 _REPEAT_MARKER = "already made this exact tool call"
 
 
@@ -281,7 +271,7 @@ async def test_loop_detector_ignores_different_args() -> None:
     model = ScriptedModel(
         [
             _tool_turn("c1", "add", a=2, b=3),
-            _tool_turn("c2", "add", a=4, b=5),  # different args -> not a loop
+            _tool_turn("c2", "add", a=4, b=5),  # different args, so not a loop
             _assistant(content="done"),
         ]
     )
@@ -294,9 +284,7 @@ async def test_loop_detector_ignores_different_args() -> None:
             assert _REPEAT_MARKER not in step.tool_results[0].content
 
 
-# --------------------------------------------------------------------------- #
 # Self-heal: unknown tool and always-raising tool
-# --------------------------------------------------------------------------- #
 async def test_unknown_tool_recovers() -> None:
     model = ScriptedModel([_tool_turn("c1", "ghost"), _assistant(content="recovered")])
     agent = Agent(model=model)  # only final_answer is registered
@@ -333,9 +321,7 @@ async def test_always_raising_tool_recovers() -> None:
     assert "RuntimeError" in action.tool_results[0].content
 
 
-# --------------------------------------------------------------------------- #
-# Interruption + resume
-# --------------------------------------------------------------------------- #
+# Interruption and resume
 def _interrupt_after_first_step(session: AgentSession) -> None:
     """Make `session` interrupt itself once, after its first recorded step."""
 
@@ -493,9 +479,7 @@ async def test_resume_after_a_finished_run_raises() -> None:
         await session.resume()
 
 
-# --------------------------------------------------------------------------- #
 # One run at a time per session
-# --------------------------------------------------------------------------- #
 _ALREADY_RUNNING = r"^Session is already running\. .*contextlib\.aclosing\.$"
 
 
@@ -632,9 +616,7 @@ async def test_sessions_run_one_after_another_and_agents_run_concurrently() -> N
     assert sorted(await asyncio.gather(agent.run("1"), agent.run("2"))) == ["x", "y"]
 
 
-# --------------------------------------------------------------------------- #
 # final_answer ends the run without tool events
-# --------------------------------------------------------------------------- #
 def _event_names(events: list[Event]) -> list[str]:
     return [type(event).__name__ for event in events]
 
@@ -719,9 +701,7 @@ def test_event_docstring_explains_final_answer() -> None:
     assert "final_answer" in (agentling.events.__doc__ or "")
 
 
-# --------------------------------------------------------------------------- #
 # Step callbacks
-# --------------------------------------------------------------------------- #
 async def test_async_step_callback_runs_before_the_step_event() -> None:
     log: list[str] = []
 
@@ -803,9 +783,7 @@ async def test_a_raising_async_callback_stops_the_run_after_recording() -> None:
     assert session.is_running is False
 
 
-# --------------------------------------------------------------------------- #
 # Skills: progressive disclosure
-# --------------------------------------------------------------------------- #
 def _load_skill_turn(call_id: str, skill_name: str) -> ChatMessage:
     """A model turn calling load_skill (whose own argument is named 'name')."""
     return _assistant(
@@ -822,8 +800,7 @@ def test_skill_catalog_is_added_to_the_system_prompt() -> None:
     assert "load_skill" in session.tools
     assert "reviewer" in agent.instructions
     assert "Review code for bugs and style issues." in agent.instructions
-    # Only the name and description surface up front; the body stays hidden
-    # until the skill is loaded.
+    # Only the name and description are shown until the skill is loaded.
     assert "off-by-one" not in agent.instructions
 
 
@@ -905,9 +882,7 @@ def test_skill_can_be_loaded_from_a_path(tmp_path: Path) -> None:
     assert "greeter" in agent.instructions
 
 
-# --------------------------------------------------------------------------- #
 # Construction guards
-# --------------------------------------------------------------------------- #
 def test_duplicate_tool_name_raises() -> None:
     with pytest.raises(ValueError, match="Duplicate tool name"):
         Agent(model=ScriptedModel([]), tools=[add, add])
@@ -925,9 +900,7 @@ async def test_run_max_steps_below_one_raises() -> None:
         await agent.run("hi", max_steps=0)
 
 
-# --------------------------------------------------------------------------- #
 # Session isolation
-# --------------------------------------------------------------------------- #
 async def test_sessions_keep_separate_memory() -> None:
     agent = Agent(model=ScriptedModel([_assistant(content="one")]))
     s1 = agent.start()
@@ -972,9 +945,7 @@ async def test_interrupt_affects_only_its_session() -> None:
     assert await s2.run("go") == "s2 done"
 
 
-# --------------------------------------------------------------------------- #
 # Malformed model output (recoverable)
-# --------------------------------------------------------------------------- #
 class _MalformedThenAnswerModel:
     """Streams one unparseable tool call, then a plain answer on the retry."""
 
@@ -1025,9 +996,7 @@ async def test_persistently_malformed_output_raises_model_error() -> None:
         await agent.run("do something")
 
 
-# --------------------------------------------------------------------------- #
 # Timeouts and cancellation
-# --------------------------------------------------------------------------- #
 async def test_tool_timeout_becomes_observation() -> None:
     model = ScriptedModel(
         [_tool_turn("c1", "slow", seconds=5), _assistant(content="done")]
@@ -1125,9 +1094,7 @@ async def test_interrupt_during_stream_stops_the_run() -> None:
     assert await session.run("stream") == "Run interrupted."
 
 
-# --------------------------------------------------------------------------- #
 # Tool execution hardening
-# --------------------------------------------------------------------------- #
 async def test_sync_tools_run_off_the_event_loop_thread() -> None:
     @tool
     def where() -> int:
@@ -1250,9 +1217,7 @@ async def test_non_parallel_safe_tools_run_in_order() -> None:
     assert order == ["first-start", "first-end", "second"]
 
 
-# --------------------------------------------------------------------------- #
 # Memory hardening: cumulative usage and the context-window hook
-# --------------------------------------------------------------------------- #
 async def test_final_event_reports_cumulative_usage() -> None:
     model = ScriptedModel([_tool_turn("c1", "add", a=1, b=1), _assistant(content="2")])
     agent = Agent(model=model, tools=[add])
@@ -1276,9 +1241,7 @@ async def test_context_manager_trims_the_prompt() -> None:
     assert len(model.calls[0]) == 1
 
 
-# --------------------------------------------------------------------------- #
 # Terminal run status and print_events
-# --------------------------------------------------------------------------- #
 async def test_completed_run_reports_status() -> None:
     model = ScriptedModel([_assistant(content="done")])
     agent = Agent(model=model)
@@ -1330,13 +1293,11 @@ async def test_print_events_writes_to_file_and_returns_answer() -> None:
 
     assert answer == "5"
     output = buffer.getvalue()
-    assert "add" in output  # the tool call was rendered
-    assert "5" in output  # the final answer was rendered
+    assert "add" in output
+    assert "5" in output
 
 
-# --------------------------------------------------------------------------- #
 # Edge cases: reserved load_skill name and tiny truncation limits
-# --------------------------------------------------------------------------- #
 def test_load_skill_name_is_reserved_when_skills_are_configured() -> None:
     @tool
     def load_skill(name: str) -> str:
@@ -1352,7 +1313,7 @@ def test_load_skill_name_is_reserved_when_skills_are_configured() -> None:
 
 
 def test_truncate_middle_handles_tiny_limits() -> None:
-    assert _truncate_middle("abc", 10) == "abc"  # under the limit, unchanged
+    assert _truncate_middle("abc", 10) == "abc"
     assert _truncate_middle("abcdef", 0) == ""
     assert _truncate_middle("abcdef", 1) == "a"
 
@@ -1361,9 +1322,7 @@ def test_truncate_middle_handles_tiny_limits() -> None:
     assert len(windowed) < 100
 
 
-# --------------------------------------------------------------------------- #
 # Dynamic tools: add_tools, remove_tools and registration checks
-# --------------------------------------------------------------------------- #
 class _SchemaTool(Tool):
     """A tool built from a raw schema that answers with a fixed label."""
 

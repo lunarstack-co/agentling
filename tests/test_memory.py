@@ -36,9 +36,7 @@ def _action_step() -> ActionStep:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Per-step rendering
-# --------------------------------------------------------------------------- #
 def test_task_step_renders_user_message() -> None:
     msgs = TaskStep(task="hi").to_messages()
     assert [m.role for m in msgs] == ["user"]
@@ -96,9 +94,7 @@ def test_final_step_renders_assistant_message() -> None:
     assert msgs[0].content == "done"
 
 
-# --------------------------------------------------------------------------- #
 # Memory.to_messages
-# --------------------------------------------------------------------------- #
 def test_to_messages_full_shape() -> None:
     mem = Memory()
     mem.add(TaskStep(task="weather?"))
@@ -121,9 +117,7 @@ def test_to_messages_empty_is_just_the_system_prompt() -> None:
     assert [m.role for m in msgs] == ["system"]
 
 
-# --------------------------------------------------------------------------- #
-# add / reset (multi-turn support)
-# --------------------------------------------------------------------------- #
+# add and reset, for multi-turn runs
 def test_add_and_reset() -> None:
     mem = Memory()
     mem.add(TaskStep(task="a"))
@@ -134,9 +128,7 @@ def test_add_and_reset() -> None:
     assert mem.steps == []
 
 
-# --------------------------------------------------------------------------- #
-# JSON round-trip (persistence / replay)
-# --------------------------------------------------------------------------- #
+# JSON round trip
 def test_json_round_trip_preserves_all_steps() -> None:
     mem = Memory()
     mem.add(TaskStep(task="weather?"))
@@ -191,15 +183,13 @@ def test_from_dict_rejects_non_list_steps() -> None:
         Memory.from_dict({"version": 1, "steps": "not a list"})
 
 
-# --------------------------------------------------------------------------- #
 # Format v2 and loading older saves
-# --------------------------------------------------------------------------- #
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 @pytest.fixture
 def memory_v1() -> dict[str, Any]:
-    """A memory saved by agentling 0.1.1, the format Aldwin has on disk."""
+    """A memory saved by Agentling 0.1.1, the format Aldwin has on disk."""
     loaded: dict[str, Any] = json.loads(
         (_FIXTURES / "memory_v1.json").read_text(encoding="utf-8")
     )

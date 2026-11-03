@@ -41,9 +41,7 @@ async def _collect(model: ScriptedModel) -> list[Delta]:
     return [delta async for delta in model.stream([ChatMessage("user", "q")])]
 
 
-# --------------------------------------------------------------------------- #
 # ScriptedModel
-# --------------------------------------------------------------------------- #
 async def test_scripted_model_answers_with_a_chat_message() -> None:
     model = ScriptedModel([ChatMessage(role="assistant", content="hi")])
 
@@ -133,9 +131,7 @@ async def test_scripted_model_records_copies() -> None:
     assert model.tools == [[definition]]
 
 
-# --------------------------------------------------------------------------- #
 # check_model: live mode and the rules
-# --------------------------------------------------------------------------- #
 def _conforming_turns() -> list[ChatMessage]:
     return [
         ChatMessage("assistant", "pong", usage=Usage(1, 1), finish_reason="stop"),
@@ -382,9 +378,7 @@ async def test_report_str_has_one_line_per_rule() -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Fixtures, recording and replay
-# --------------------------------------------------------------------------- #
 def _exchange(body_lines: list[str], status: int = 200) -> Exchange:
     return Exchange(
         request={"method": "POST", "url": "http://test/v1", "headers": {}, "body": {}},
@@ -637,9 +631,7 @@ def test_read_fixture_rejects_bad_files(tmp_path: Path) -> None:
         read_fixture(no_body)
 
 
-# --------------------------------------------------------------------------- #
 # httpx stays optional
-# --------------------------------------------------------------------------- #
 def _without_httpx(code: str) -> subprocess.CompletedProcess[str]:
     script = "import sys\nsys.modules['httpx'] = None\n" + code
     return subprocess.run(

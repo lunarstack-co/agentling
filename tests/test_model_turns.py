@@ -132,9 +132,7 @@ class _Recorder:
         self.calls.append((attempt, max_retries, exc, delay))
 
 
-# --------------------------------------------------------------------------- #
 # The stream-only protocol and tool definitions
-# --------------------------------------------------------------------------- #
 class OnlyStreamModel:
     async def stream(
         self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition] = ()
@@ -177,9 +175,7 @@ async def test_synthesised_id_round_trips() -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Retry
-# --------------------------------------------------------------------------- #
 async def test_rate_limit_is_retried_then_succeeds() -> None:
     error = ModelRateLimitError(retry_after=0.01)
     fake = StreamFake([error, _text("ok")])
@@ -355,9 +351,7 @@ async def test_interrupt_during_a_retry_wait_stops_without_another_attempt() -> 
     assert await session.run("again") == "after"
 
 
-# --------------------------------------------------------------------------- #
 # Per-chunk timeout
-# --------------------------------------------------------------------------- #
 async def test_slow_consumer_is_not_charged_to_model_timeout() -> None:
     fake = StreamFake([[Delta(content=c) for c in "abcdef"]], delay_between=0.01)
     agent = Agent(model=fake, model_timeout=0.1)
@@ -397,9 +391,7 @@ async def test_no_model_timeout_means_unbounded() -> None:
     assert await Agent(model=fake, model_timeout=None).run("x") == "eventually"
 
 
-# --------------------------------------------------------------------------- #
 # Forced final answer at the step limit
-# --------------------------------------------------------------------------- #
 async def test_forced_final_uses_context_manager_and_no_tools() -> None:
     seen: list[int] = []
 
@@ -492,9 +484,7 @@ async def test_interrupt_before_the_forced_final_skips_its_model_call() -> None:
     assert not any(isinstance(step, FinalStep) for step in session.memory.steps)
 
 
-# --------------------------------------------------------------------------- #
 # Interrupting the first model call, and resuming afterwards
-# --------------------------------------------------------------------------- #
 class _InterruptsFirstCall:
     """Interrupts its own session while streaming its first turn."""
 
@@ -567,9 +557,7 @@ async def test_is_running_resets_after_a_run_raises() -> None:
     assert session.is_running is False
 
 
-# --------------------------------------------------------------------------- #
 # Output cut off by the model's length limit
-# --------------------------------------------------------------------------- #
 _CUT_OFF = "Model output was cut off by its length limit while writing a tool call."
 
 
@@ -645,9 +633,7 @@ async def test_truncation_on_the_forced_final_raises() -> None:
     assert len(fake.calls) == 2
 
 
-# --------------------------------------------------------------------------- #
 # Malformed turns and the step limit
-# --------------------------------------------------------------------------- #
 async def test_malformed_turn_does_not_use_a_step() -> None:
     fake = StreamFake([_malformed(), _text("ok")])
 
@@ -686,9 +672,7 @@ async def test_three_malformed_turns_in_a_row_still_raise() -> None:
     assert len(fake.calls) == 3
 
 
-# --------------------------------------------------------------------------- #
 # provider_data must be JSON-serialisable
-# --------------------------------------------------------------------------- #
 async def test_non_json_provider_data_on_a_tool_turn() -> None:
     fake = StreamFake([_call("add", '{"a": 1, "b": 2}', provider_data={"x": object()})])
     session = Agent(model=fake, tools=[add]).start()
@@ -732,9 +716,7 @@ async def test_nested_json_provider_data_is_kept() -> None:
     assert action.model_message.provider_data == data
 
 
-# --------------------------------------------------------------------------- #
 # Usage and finish_reason on the FinalEvent
-# --------------------------------------------------------------------------- #
 async def test_unknown_usage_stays_none() -> None:
     final = await _final(Agent(model=StreamFake([_text("hi")])))
     assert final.usage is None
@@ -787,9 +769,7 @@ async def test_finish_reason_on_the_forced_final() -> None:
     assert final.finish_reason == "length"
 
 
-# --------------------------------------------------------------------------- #
 # The model check at construction
-# --------------------------------------------------------------------------- #
 def test_a_model_name_is_rejected() -> None:
     with pytest.raises(
         TypeError,
@@ -823,9 +803,7 @@ def test_a_coroutine_stream_is_rejected_at_construction() -> None:
         Agent(model=_CoroutineStream())  # type: ignore[arg-type]
 
 
-# --------------------------------------------------------------------------- #
 # Performance budget
-# --------------------------------------------------------------------------- #
 def test_reassembly_and_provider_data_check_are_fast() -> None:
     deltas = [
         Delta(tool_calls=[ToolCallDelta(index, None, f"tool_{index}", '{"a": 1}')])
