@@ -82,7 +82,15 @@ class ModelAuthError(ModelError):
 
 
 class ModelBadRequestError(ModelError):
-    """The backend rejected the request itself (HTTP 400/404/422)."""
+    """The backend rejected the request itself (any other 4xx).
+
+    Any 4xx status that is not 401/403 (`ModelAuthError`) or 429
+    (`ModelRateLimitError`) lands here, unless the body reports a bad
+    key or an over-long prompt, which map to `ModelAuthError` and
+    `ModelContextLengthError` instead. That includes 400, 404 and 422,
+    and also 413 (payload too large) and every other 4xx the backend
+    may return, such as an unknown model or a bad field.
+    """
 
 
 class ModelContextLengthError(ModelError):
