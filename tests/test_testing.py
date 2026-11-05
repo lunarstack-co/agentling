@@ -457,6 +457,7 @@ async def test_recording_transport_redacts_keys() -> None:
         "Authorization": "Bearer sk-test-1",
         "X-Api-Key": "sk-ant-test-2",
         "api-key": "k3",
+        "X-Goog-Api-Key": "google-test-key",
         "X-Trace": "t",
     }
 
@@ -465,10 +466,10 @@ async def test_recording_transport_redacts_keys() -> None:
 
     assert response.text == "hello"
     recorded = recorder.exchanges[0].request["headers"]
-    for name in ("authorization", "x-api-key", "api-key"):
+    for name in ("authorization", "x-api-key", "api-key", "x-goog-api-key"):
         assert recorded[name] == "‹redacted›"
     assert recorded["x-trace"] == "t"
-    for secret in ("sk-test-1", "sk-ant-test-2", "k3"):
+    for secret in ("sk-test-1", "sk-ant-test-2", "k3", "google-test-key"):
         assert secret not in repr(recorder.exchanges)
     assert recorder.exchanges[0].request["body"] == {"a": 1}
 

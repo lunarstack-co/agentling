@@ -46,7 +46,7 @@ except ImportError:
 ScriptedTurn = ChatMessage | Sequence[Delta] | Exception
 
 _REDACTED = "‹redacted›"
-_SECRET_HEADERS = frozenset({"authorization", "x-api-key", "api-key"})
+_SECRET_HEADERS = frozenset({"authorization", "x-api-key", "api-key", "x-goog-api-key"})
 # Replayed bodies are plain text, so headers about the original encoding
 # would make httpx decode them a second time.
 _DROPPED_ON_REPLAY = frozenset(
@@ -512,7 +512,7 @@ class RecordingTransport(_TransportBase):
 
     Wraps `inner` (a real network transport by default). Each request asks
     for an unencoded body so the recording holds the bytes the adapter
-    parsed. API keys in the authorization, x-api-key and api-key headers are
+    parsed. API keys in authorization, x-api-key, api-key and x-goog-api-key are
     replaced before anything is stored. Request bodies are recorded as sent,
     so a key a backend takes in the body is kept: check a fixture before
     committing it.

@@ -4,6 +4,17 @@ All notable changes to Agentling are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims
 to follow [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- A copyable native Gemini streaming adapter, recorder integration and an offline
+  conformance fixture, with tool calling, thought-signature replay and token usage.
+
+### Fixed
+
+- Redact Google's `x-goog-api-key` header when recording HTTP fixtures.
+
 ## [0.2.0] - 2026-11-03
 
 **Breaking: Agentling no longer ships a model provider.** Every removed or

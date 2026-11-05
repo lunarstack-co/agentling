@@ -240,10 +240,11 @@ class Model(Protocol):
     ) -> AsyncIterator[Delta]: ...
 ```
 
-[`examples/providers/`](examples/providers/) has three adapters to copy:
+[`examples/providers/`](examples/providers/) has four adapters to copy:
 `openai_chat.py` for OpenAI and compatible servers (LM Studio, vLLM, Ollama's
 `/v1`, OpenRouter, Gemini's compatibility endpoint), `anthropic_messages.py`
-for Claude, and `ollama_native.py` for Ollama's own API. Point `base_url` at
+for Claude, `ollama_native.py` for Ollama's own API, and `gemini_native.py`
+for Gemini's native API. Point `base_url` at
 your endpoint:
 
 ```python
@@ -274,6 +275,10 @@ the reference adapter closest to your backend:
 - [`ollama_native.py`](examples/providers/ollama_native.py): Ollama's
   `/api/chat`. Reads newline-delimited JSON, whole tool calls, and usage from
   the final chunk.
+- [`gemini_native.py`](examples/providers/gemini_native.py): Gemini's native
+  `streamGenerateContent` API. Maps function calls, cached and thinking tokens,
+  and replays model parts with their thought signatures through `provider_data`.
+  Reads `GEMINI_API_KEY` (or `GOOGLE_API_KEY`); `base_url` includes `/v1beta`.
 
 **What you yield.** Each `Delta` carries any of these, all optional:
 
