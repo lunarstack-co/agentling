@@ -107,6 +107,8 @@ class Agent:
             answer. Turns that fail to parse don't count.
         step_callbacks: Called in order with each ActionStep before its
             StepEvent; async ones are awaited, and one that raises stops the run.
+            They don't run for a plain-text final answer. Use FinalEvent to
+            observe run completion.
         parallel_tools: Run a step's tool calls concurrently, unless any of
             them has parallel_safe=False.
         tool_timeout: Seconds allowed per tool call, for tools that don't set
