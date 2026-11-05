@@ -4,6 +4,13 @@ All notable changes to Agentling are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims
 to follow [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Clarify that step callbacks do not run for a plain-text final answer, and
+  point to `FinalEvent` for observing run completion.
+
 ## [0.2.0] - 2026-11-03
 
 **Breaking: Agentling no longer ships a model provider.** Every removed or

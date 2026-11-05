@@ -14,7 +14,7 @@ Settings and signatures for Agentling's public API. Concepts are in the
 | `skills` | `()` | `Skill` objects, or paths to skill folders. |
 | `instructions` | built-in prompt | The system prompt. The skill catalog is appended when there are skills. |
 | `max_steps` | `15` | Model turns before a forced, tool-free answer. At least 1. Unparseable turns don't count. |
-| `step_callbacks` | `()` | Called in order with each `ActionStep` before its `StepEvent`. Async ones are awaited; one that raises stops the run. |
+| `step_callbacks` | `()` | Called in order with each `ActionStep` before its `StepEvent`. Async ones are awaited; one that raises stops the run. They don't run for a plain-text final answer. Use `FinalEvent` to observe run completion. |
 | `parallel_tools` | `True` | Run a step's tool calls concurrently, unless one has `parallel_safe=False`. |
 | `tool_timeout` | `None` | Seconds per tool call, for tools that don't set their own. A timeout becomes an error result. |
 | `model_timeout` | `None` | Seconds to wait for each streamed chunk. Exceeding it raises `ModelTimeoutError`, which is retried if nothing had arrived. |
