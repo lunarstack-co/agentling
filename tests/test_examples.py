@@ -33,6 +33,7 @@ from agentling.testing import (
     read_fixture,
 )
 from examples.providers.anthropic_messages import AnthropicMessagesModel
+from examples.providers.gemini_native import GeminiModel
 from examples.providers.ollama_native import OllamaModel
 from examples.providers.openai_chat import OpenAIChatModel
 
@@ -237,11 +238,16 @@ def _ollama(transport: httpx.AsyncBaseTransport | None) -> OllamaModel:
     return OllamaModel("qwen3:8b", transport=transport)
 
 
+def _gemini(transport: httpx.AsyncBaseTransport | None) -> GeminiModel:
+    return GeminiModel("gemini-2.5-flash", api_key="k", transport=transport)
+
+
 @pytest.mark.parametrize(
     ("factory", "fixture", "error_status"),
     [
         (_anthropic, "anthropic_messages.jsonl", 529),
         (_ollama, "ollama_native.jsonl", 404),
+        (_gemini, "gemini_native.jsonl", 429),
     ],
 )
 async def test_reference_adapter_fixture_passes_check_model(
@@ -315,6 +321,7 @@ def test_record_help_lists_the_adapters() -> None:
         "openai_chat",
         "anthropic_messages",
         "ollama_native",
+        "gemini_native",
         "--base-url",
         "--model",
         "--api-key-env",

@@ -35,10 +35,11 @@ from agentling.testing import (
     write_fixture,
 )
 from examples.providers.anthropic_messages import AnthropicMessagesModel
+from examples.providers.gemini_native import GeminiModel
 from examples.providers.ollama_native import OllamaModel
 from examples.providers.openai_chat import OpenAIChatModel
 
-ADAPTERS = ("openai_chat", "anthropic_messages", "ollama_native")
+ADAPTERS = ("openai_chat", "anthropic_messages", "ollama_native", "gemini_native")
 
 
 def build(
@@ -51,13 +52,15 @@ def build(
 ) -> Model:
     """Construct one of the reference adapters around `transport`."""
 
-    built: OpenAIChatModel | AnthropicMessagesModel | OllamaModel
+    built: OpenAIChatModel | AnthropicMessagesModel | OllamaModel | GeminiModel
     if adapter == "openai_chat":
         built = OpenAIChatModel(model, api_key=api_key, transport=transport)
     elif adapter == "anthropic_messages":
         built = AnthropicMessagesModel(model, api_key=api_key, transport=transport)
     elif adapter == "ollama_native":
         built = OllamaModel(model, api_key=api_key, transport=transport)
+    elif adapter == "gemini_native":
+        built = GeminiModel(model, api_key=api_key, transport=transport)
     else:
         raise ValueError(f"Unknown adapter {adapter!r}. Choose one of {ADAPTERS}.")
     if base_url:
