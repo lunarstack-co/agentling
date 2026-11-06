@@ -279,6 +279,9 @@ the reference adapter closest to your backend:
   `streamGenerateContent` API. Maps function calls, cached and thinking tokens,
   and replays model parts with their thought signatures through `provider_data`.
   Reads `GEMINI_API_KEY` (or `GOOGLE_API_KEY`); `base_url` includes `/v1beta`.
+  Use a current model id (for example `gemini-3.8-flash` in examples); older ids
+  such as `gemini-2.5-flash` may return 404 for newly issued API keys while Google
+  rotates model availability.
 
 **What you yield.** Each `Delta` carries any of these, all optional:
 

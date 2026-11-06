@@ -465,7 +465,7 @@ async def test_recorder_redacts_google_key_and_replays_contract(tmp_path: Path) 
     out = tmp_path / "gemini.jsonl"
     report = await record(
         "gemini_native",
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         api_key="private-google-key",
         out=out,
         inner=httpx.MockTransport(handler),

@@ -239,7 +239,7 @@ def _ollama(transport: httpx.AsyncBaseTransport | None) -> OllamaModel:
 
 
 def _gemini(transport: httpx.AsyncBaseTransport | None) -> GeminiModel:
-    return GeminiModel("gemini-2.5-flash", api_key="k", transport=transport)
+    return GeminiModel("gemini-3.8-flash", api_key="k", transport=transport)
 
 
 @pytest.mark.parametrize(

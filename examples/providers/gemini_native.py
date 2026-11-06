@@ -4,7 +4,7 @@ Uses httpx, not Google's SDK, and never retries; the agent loop owns retries.
 Raw model parts round-trip under provider_data["gemini"]["parts"], preserving
 thought signatures on text and function calls without merging or reordering them.
 
-    model = GeminiModel("gemini-2.5-flash")  # reads GEMINI_API_KEY
+    model = GeminiModel("gemini-3.8-flash")  # reads GEMINI_API_KEY
     agent = Agent(model=model, tools=[...])
 """
 

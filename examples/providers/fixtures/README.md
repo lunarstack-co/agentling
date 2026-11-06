@@ -24,20 +24,22 @@ live recording by running `record.py`, then update this table.
 | `openai_chat_lmstudio.jsonl` | hand-written | hand-written, tool call id `""` | none | LM Studio's OpenAI-compatible server, which sends empty tool call ids |
 | `anthropic_messages.jsonl` | hand-written | hand-written, a signed thinking block, a redacted thinking block and a tool call | hand-written, 529 `overloaded_error` | Anthropic Messages streaming and errors docs |
 | `ollama_native.jsonl` | recorded 3 Nov 2026, Ollama 0.40.14 with `qwen3:8b` | recorded 3 Nov 2026, same server; the call carries `id` and `function.index` | hand-written, 404 model not found | Ollama `/api/chat` docs and `server/routes.go` for line 3 |
-| `gemini_native.jsonl` | hand-written | hand-written, thought and function-call signatures, cached and thinking tokens | hand-written, 429 `RESOURCE_EXHAUSTED` with `retry-after` | [Gemini generateContent REST reference](https://ai.google.dev/api/generate-content), including `Part`, `FunctionCall` and `UsageMetadata` |
+| `gemini_native.jsonl` | mock-recorded | mock-recorded, thought and function-call signatures, cached and thinking tokens | hand-written, 429 `RESOURCE_EXHAUSTED` with `retry-after` | [Gemini generateContent REST reference](https://ai.google.dev/api/generate-content), including `Part`, `FunctionCall` and `UsageMetadata`; URLs use `gemini-3.8-flash` |
 
-The Gemini fixture was captured through `record.py` over `httpx.MockTransport`;
-it is not a live Gemini recording. Replace it with a free-tier recording when a
-key is available:
+Lines 1 and 2 were produced through `record.py`’s `RecordingTransport` over
+`httpx.MockTransport` with response bodies shaped like the live API; replace
+them with a real free-tier recording when you have a key (use a current model
+id — older names such as `gemini-2.5-flash` often 404 for new keys):
 
 ```bash
 uv run python -m examples.providers.record gemini_native \\
-  --model gemini-2.5-flash --api-key-env GEMINI_API_KEY \\
+  --model gemini-3.8-flash --api-key-env GEMINI_API_KEY \\
   --out examples/providers/fixtures/gemini_native.jsonl
 ```
 
-The recorder writes the two successful turns; keep or replace the third error
-exchange separately, as described above. Read the request bodies before committing.
+The recorder writes the two successful turns; append the third error exchange
+separately (or keep the synthetic 429 line), as described above. Read the request
+bodies before committing.
 
 Request bodies are recorded as sent. The recorder redacts keys in headers,
 not in bodies, so read a new fixture before committing it; the test suite

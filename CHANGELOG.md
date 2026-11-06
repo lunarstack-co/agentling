@@ -10,6 +10,8 @@ to follow [semantic versioning](https://semver.org/).
 
 - A copyable native Gemini streaming adapter, recorder integration and an offline
   conformance fixture, with tool calling, thought-signature replay and token usage.
+  Examples and the `gemini_native.jsonl` fixture use the `gemini-3.8-flash` model id;
+  document that older Gemini 2.x ids may no longer be available for new API keys.
 
 ### Changed
 
