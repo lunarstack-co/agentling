@@ -11,6 +11,11 @@ to follow [semantic versioning](https://semver.org/).
 - A copyable native Gemini streaming adapter, recorder integration and an offline
   conformance fixture, with tool calling, thought-signature replay and token usage.
 
+### Changed
+
+- Clarify that step callbacks do not run for a plain-text final answer, and
+  point to `FinalEvent` for observing run completion.
+
 ### Fixed
 
 - Redact Google's `x-goog-api-key` header when recording HTTP fixtures.

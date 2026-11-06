@@ -327,7 +327,7 @@ when the backend says how long to wait.
 | `ModelAuthError` | HTTP 401 or 403, or a backend's own "bad key" error. | no |
 | `ModelBadRequestError` | Any other 4xx: an unknown model, a bad field. | no |
 | `ModelContextLengthError` | The conversation no longer fits the context window. | no |
-| `ModelOutputError` | The output can't be used, such as `provider_data` that isn't JSON-serialisable. The loop raises it for unparseable tool calls. | no |
+| `ModelOutputError` | The output can't be used, such as `provider_data` that isn't JSON-serialisable. For an unparseable tool call the loop asks the model to fix it, then raises `ModelError` if the model keeps failing. | no |
 | `ModelOutputTruncatedError` | Raised by the loop when the output limit cuts a tool call short. Adapters don't raise it. | no |
 
 How often and how long the loop retries is set by the agent's `RetryPolicy`;
