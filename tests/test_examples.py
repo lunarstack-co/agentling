@@ -10,6 +10,7 @@ import pytest
 import examples.cli_advanced_observer as observer
 import examples.cli_dynamic_tools as dynamic_tools
 import examples.cli_failure_recovery as failure_recovery
+import examples.cli_interrupt_resume as interrupt_resume
 import examples.cli_math_tutor as math_tutor
 import examples.cli_memory_chat as memory_chat
 import examples.cli_notes_agent as notes_agent
@@ -19,6 +20,7 @@ import examples.providers.record as record
 from agentling import (
     ActionStep,
     ChatMessage,
+    FinalEvent,
     Memory,
     TaskStep,
     ToolCall,
@@ -56,7 +58,13 @@ def _call(call_id: str, name: str, /, **arguments: Any) -> ToolCall:
 
 # Imports and shape
 def test_offline_examples_expose_build_agent_and_main() -> None:
-    for module in (dynamic_tools, failure_recovery, memory_chat, observer):
+    for module in (
+        dynamic_tools,
+        failure_recovery,
+        interrupt_resume,
+        memory_chat,
+        observer,
+    ):
         assert callable(module.build_agent)
         assert callable(module.main)
 
@@ -71,6 +79,47 @@ async def test_failure_recovery_recovers_from_tool_errors() -> None:
     assert action_steps
     errors = [r for s in action_steps for r in s.tool_results if r.is_error]
     assert errors  # the tool failure came back as an observation
+
+
+async def test_interrupt_resume_continues_without_new_task() -> None:
+    session = interrupt_resume.build_agent().start()
+    task = "Add 19 and 23, then add 3."
+    results: list[ToolResultEvent] = []
+    finals: list[FinalEvent] = []
+    async for event in session.run(task, stream=True):
+        if isinstance(event, ToolResultEvent):
+            results.append(event)
+            if len(results) == 1:
+                session.interrupt()
+        elif isinstance(event, FinalEvent):
+            finals.append(event)
+
+    assert len(finals) == 1
+    assert finals[0].status == "interrupted"
+    assert not session.is_running
+    assert len(results) == 1
+    assert results[0].result.content == "42"
+    assert results[0].result.is_error is False
+    actions = [s for s in session.memory.steps if isinstance(s, ActionStep)]
+    assert len(actions) == 1
+    assert actions[0].tool_results == [results[0].result]
+    tasks = [s for s in session.memory.steps if isinstance(s, TaskStep)]
+    assert len(tasks) == 1
+    assert tasks[0].task == task
+
+    assert await session.resume() == "The result is 45."
+
+    actions = [s for s in session.memory.steps if isinstance(s, ActionStep)]
+    assert len(actions) == 2
+    assert len(actions[1].tool_results) == 1
+    assert actions[1].tool_results[0].content == "45"
+    assert actions[1].tool_results[0].is_error is False
+    resumed_tasks = [s for s in session.memory.steps if isinstance(s, TaskStep)]
+    assert len(resumed_tasks) == 1
+    assert resumed_tasks[0] is tasks[0]
+    messages = session.memory.to_messages(session.agent.instructions)
+    assert [m.content for m in messages if m.role == "user"] == [task]
+    assert not session.is_running
 
 
 # Dynamic tools (offline)
@@ -370,6 +419,7 @@ async def test_generate_only_example() -> None:
         (observer, "Event counts:"),
         (dynamic_tools, "[unknown_tool] get_weather"),
         (failure_recovery, "[ok] divide: 5.0"),
+        (interrupt_resume, "The result is 45."),
         (memory_chat, "[completed] Your name is Sam."),
     ],
 )
