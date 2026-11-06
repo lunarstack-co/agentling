@@ -394,6 +394,7 @@ Run each one from the repository root. These need no API key:
 
 ```bash
 uv run python -m examples.cli_failure_recovery        # tool errors the model recovers from
+uv run python -m examples.cli_interrupt_resume        # interrupt after a tool result, then resume
 uv run python -m examples.cli_memory_chat             # save a session and continue it
 uv run python -m examples.cli_advanced_observer       # every event type, and context_manager
 uv run python -m examples.cli_dynamic_tools           # add and remove tools on a live session

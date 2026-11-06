@@ -6,6 +6,11 @@ to follow [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Add an offline example showing how to interrupt a streamed run after a tool
+  result and resume the same task.
+
 ### Changed
 
 - Clarify that step callbacks do not run for a plain-text final answer, and
